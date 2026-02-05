@@ -4,9 +4,7 @@
 
 ## Why "Lêtô"?
 
-This repository is named **Lêtô** (Λητώ) in honor of the Greek titaness who confronted Hermes at Troy. In Homer's *Iliad*, when the gods chose sides in the Trojan War, Hermes faced Leto on the battlefield—though he wisely declined combat with the mother of Apollo and Artemis. As Nonnus recounts, "Hermes rod in hand came to conflict with Leto."
-
-Just as Leto stood against Hermes at Troy, this toolkit stands ready to analyze and deconstruct Meta's Hermes bytecode.
+This repository is named **Lêtô** (Λητώ) in honor of the Greek titaness who confronted Hermes at Troy. In Homer's *Iliad*, when the gods chose sides in the Trojan War, Hermes faced Leto on the battlefield, though he declined combat with the mother of Apollo and Artemis, saying "Off you go, and make loud boasts among the deathless gods that you have conquered me by strength and force." (Wilson, 2023)
 
 ## Installation
 
