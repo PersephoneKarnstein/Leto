@@ -1,13 +1,11 @@
 ---
 name: hermes-bytecode
-description: Analyze Hermes bytecode in React Native Android apps. Disassemble, decompile, patch, and instrument .hbc files and index.android.bundle. Keywords - "hermes", "react native", "hbc", "bytecode", "decompile", "frida", "r2hermes", "hbctool"
+description: Analyze Hermes bytecode in React Native Android and iOS apps. Disassemble, decompile, patch, and instrument .hbc files, index.android.bundle, and main.jsbundle. Keywords - "hermes", "react native", "hbc", "bytecode", "decompile", "frida", "r2hermes", "hbctool", "ios", "ipa"
 ---
 
 # Hermes Bytecode Analysis
 
-Comprehensive toolkit for reverse engineering React Native Android applications compiled with Meta's Hermes JavaScript engine.
-
-> **Note**: This skill focuses on Android. iOS Hermes analysis requires different tooling (IPA extraction, jailbroken device, different binary formats).
+Comprehensive toolkit for reverse engineering React Native **Android and iOS** applications compiled with Meta's Hermes JavaScript engine.
 
 ---
 
@@ -20,22 +18,28 @@ Comprehensive toolkit for reverse engineering React Native Android applications 
 5. [Installation](#installation-prompt-user-first)
 6. [Penetration Testing Methodology](#penetration-testing-methodology)
 7. [Security Audit Checklist](#security-audit-checklist)
-8. [Static Analysis](#static-analysis-workflows)
+8. [Static Analysis - Android](#static-analysis-workflows)
    - [JADX Integration](#jadx-integration)
    - [Large Bundle Handling](#important-large-bundle-handling)
    - [APK Extraction](#apk-extraction-workflow)
    - [Automated APK Analysis](#automated-apk-analysis)
    - [Source Map Analysis](#source-map-analysis)
-9. [Dynamic Analysis](#dynamic-analysis--runtime-instrumentation)
-   - [Maestro UI Automation](#maestro-ui-automation)
-   - [Burp Suite Traffic Interception](#burp-suite-traffic-interception)
-   - [Frida Setup & Scripts](#frida-setup-for-hermes-apps)
-10. [Emulator Setup](#emulator-setup-for-penetration-testing)
-11. [Patching & Modification](#patching--modification-workflow)
-12. [Troubleshooting](#troubleshooting)
-13. [Security Report Writing](#security-report-writing)
-14. [Command Reference](#r2hermes-command-reference)
-15. [Resources](#resources)
+9. [iOS Analysis](#ios-analysis)
+   - [IPA Extraction](#ipa-extraction)
+   - [iOS Jailbreak Tools](#ios-jailbreak-tools)
+   - [Frida on iOS](#frida-on-ios)
+   - [Objection for iOS](#objection-for-ios)
+   - [iOS SSL Pinning Bypass](#ios-ssl-pinning-bypass)
+10. [Dynamic Analysis](#dynamic-analysis--runtime-instrumentation)
+    - [Maestro UI Automation](#maestro-ui-automation)
+    - [Burp Suite Traffic Interception](#burp-suite-traffic-interception)
+    - [Frida Setup & Scripts](#frida-setup-for-hermes-apps)
+11. [Emulator Setup (Android)](#emulator-setup-for-penetration-testing)
+12. [Patching & Modification](#patching--modification-workflow)
+13. [Troubleshooting](#troubleshooting)
+14. [Security Report Writing](#security-report-writing)
+15. [Command Reference](#r2hermes-command-reference)
+16. [Resources](#resources)
 
 ---
 
@@ -1005,6 +1009,401 @@ module.exports = {
   },
 };
 ```
+
+---
+
+## iOS Analysis
+
+This section covers iOS-specific techniques for analyzing React Native apps with Hermes bytecode.
+
+### Platform Differences
+
+| Aspect | Android | iOS |
+|--------|---------|-----|
+| **Bundle file** | `assets/index.android.bundle` | `main.jsbundle` in app bundle |
+| **Package format** | APK (zip) | IPA (zip) |
+| **Bundle location** | `assets/` directory | `Payload/AppName.app/` |
+| **Root access** | Rooted device/emulator | Jailbroken device |
+| **Dynamic instrumentation** | Frida + frida-server | Frida + jailbreak or gadget injection |
+| **Hermes default** | Since RN 0.70 | Since RN 0.70 (supported since 0.64) |
+
+### IPA Extraction
+
+#### Extract Bundle from IPA
+
+```bash
+# Unzip IPA file
+unzip -o app.ipa -d extracted_ipa/
+
+# Find the Hermes bundle
+ls extracted_ipa/Payload/*.app/main.jsbundle
+
+# Copy bundle for analysis
+cp extracted_ipa/Payload/*.app/main.jsbundle ./
+
+# Check if it's Hermes bytecode
+file main.jsbundle
+# Output: "Hermes JavaScript bytecode, version XX" = Hermes
+# Output: "ASCII text" or similar = Plain JavaScript
+```
+
+#### Verify Hermes Version
+
+```bash
+# Same tools work on iOS bundles
+r2 -qc 'pd:hi' main.jsbundle
+```
+
+**Example output:**
+```
+Hermes Bytecode File
+  Version: 96
+  Function count: 5432
+  String count: 8901
+  Hash status: valid
+```
+
+#### Analyze iOS Bundle
+
+All the same Hermes analysis tools work on iOS bundles:
+
+```bash
+# Decompile with r2hermes
+r2 -qc 'pd:ha' main.jsbundle > decompiled.js
+
+# Extract strings
+r2 -qc 'iz~http' main.jsbundle
+
+# Use hermes-dec
+hbc-decompiler main.jsbundle output.js
+
+# Use hermes_rs
+hermes_rs strings main.jsbundle
+```
+
+### iOS Jailbreak Tools
+
+For dynamic analysis, you need a jailbroken device. Current options:
+
+| Tool | Devices | iOS Versions | Type | Notes |
+|------|---------|--------------|------|-------|
+| **[Palera1n](https://palera.in/)** | A8-A11 | 15.0-17.x | Semi-tethered | checkm8-based, most reliable |
+| **[Dopamine](https://ellekit.space/dopamine/)** | A12-A16 (arm64e) | 15.0-16.6.1 | Semi-untethered | Fugu15-based |
+| **[Checkra1n](https://checkra.in/)** | A7-A11 | 12.0-14.8.1 | Semi-tethered | Original checkm8 tool |
+
+#### Palera1n Setup (Recommended for A8-A11)
+
+```bash
+# Download palera1n (macOS/Linux)
+# From https://github.com/palera1n/palera1n/releases
+
+# Run jailbreak (rootless by default)
+./palera1n
+
+# After jailbreak, install Sileo package manager
+# Then install Frida from https://build.frida.re/
+```
+
+#### Dopamine Setup (A12+ devices)
+
+```bash
+# Download TrollStore first (required for Dopamine)
+# Install Dopamine.tipa via TrollStore
+# Jailbreak from Dopamine app
+# Install Sileo, then Frida from build.frida.re
+```
+
+### Frida on iOS
+
+#### Option 1: Jailbroken Device
+
+```bash
+# On jailbroken device, add Frida repo to Sileo/Cydia:
+# https://build.frida.re/
+
+# Install frida package
+# Frida server runs automatically as daemon
+
+# From your computer, verify connection
+frida-ps -U
+
+# Attach to React Native app
+frida -U -f com.target.app -l scripts/frida/universal_ssl_bypass.js
+```
+
+**Example frida-ps output on iOS:**
+```
+  PID  Name
+-----  -------------------------------------------
+  102  SpringBoard
+  456  backboardd
+ 1234  TargetApp              <-- Your target
+```
+
+#### Option 2: Frida Gadget Injection (Non-Jailbroken)
+
+For non-jailbroken devices, inject Frida gadget into the IPA:
+
+**Prerequisites (macOS only):**
+- Apple Developer account (free or paid)
+- Xcode installed
+- Valid code signing certificate
+
+```bash
+# Use objection to patch IPA
+objection patchipa --source app.ipa --codesign-signature "Apple Development: your@email.com"
+
+# Output: app-frida-codesigned.ipa
+
+# Install with Xcode, Apple Configurator, or ios-deploy
+ios-deploy --bundle app-frida-codesigned.ipa
+
+# Connect with objection
+objection -g "App Name" explore
+```
+
+### Objection for iOS
+
+Objection provides iOS-specific commands beyond Android:
+
+```bash
+# Start objection on iOS app
+objection -g "Target App" explore
+
+# iOS-specific commands:
+
+# Disable SSL pinning
+ios sslpinning disable
+
+# List URL handlers (deep links)
+ios plist cat Info.plist | grep CFBundleURLSchemes -A 10
+
+# Dump keychain
+ios keychain dump
+
+# List cookies
+ios cookies get
+
+# Dump NSUserDefaults
+ios nsuserdefaults get
+
+# List application directories
+env
+
+# Jailbreak detection bypass
+ios jailbreak disable
+
+# Simulate jailbreak detection check
+ios jailbreak simulate
+
+# Dump classes
+ios hooking list classes
+
+# Search for classes
+ios hooking search classes Auth
+
+# Watch method
+ios hooking watch method "+[KeychainHelper getPassword]" --dump-args
+```
+
+### iOS SSL Pinning Bypass
+
+#### Frida Script for iOS
+
+Create `scripts/frida/ios_ssl_bypass.js`:
+
+```javascript
+// iOS SSL Pinning Bypass
+// Covers NSURLSession, TrustKit, AFNetworking, Alamofire
+
+if (ObjC.available) {
+    console.log("[*] iOS SSL Pinning Bypass loaded");
+
+    // NSURLSession TLS bypass
+    try {
+        var NSURLSessionConfiguration = ObjC.classes.NSURLSessionConfiguration;
+        Interceptor.attach(NSURLSessionConfiguration['- setTLSMinimumSupportedProtocol:'].implementation, {
+            onEnter: function(args) {
+                console.log("[+] Bypassing TLS minimum protocol");
+            }
+        });
+    } catch(e) {}
+
+    // TrustKit bypass
+    try {
+        var TrustKit = ObjC.classes.TrustKit;
+        if (TrustKit) {
+            Interceptor.attach(TrustKit['+ setUpSharedTrustKitWithConfiguration:'].implementation, {
+                onEnter: function(args) {
+                    console.log("[+] TrustKit detected, bypassing...");
+                }
+            });
+
+            var TSKPinningValidator = ObjC.classes.TSKPinningValidator;
+            Interceptor.attach(TSKPinningValidator['- evaluateTrust:forHostname:'].implementation, {
+                onLeave: function(retval) {
+                    console.log("[+] TrustKit evaluateTrust bypassed");
+                    retval.replace(0); // TSKTrustDecisionShouldAllowConnection
+                }
+            });
+        }
+    } catch(e) {}
+
+    // AFNetworking bypass
+    try {
+        var AFSecurityPolicy = ObjC.classes.AFSecurityPolicy;
+        if (AFSecurityPolicy) {
+            Interceptor.attach(AFSecurityPolicy['- setSSLPinningMode:'].implementation, {
+                onEnter: function(args) {
+                    args[2] = ptr(0); // AFSSLPinningModeNone
+                    console.log("[+] AFNetworking pinning mode set to None");
+                }
+            });
+        }
+    } catch(e) {}
+
+    // Generic SecTrust bypass
+    try {
+        var SecTrustEvaluateWithError = Module.findExportByName("Security", "SecTrustEvaluateWithError");
+        if (SecTrustEvaluateWithError) {
+            Interceptor.attach(SecTrustEvaluateWithError, {
+                onLeave: function(retval) {
+                    retval.replace(1); // true = trusted
+                    console.log("[+] SecTrustEvaluateWithError bypassed");
+                }
+            });
+        }
+    } catch(e) {}
+
+    console.log("[*] iOS SSL bypass hooks installed");
+
+} else {
+    console.log("[-] Objective-C runtime not available");
+}
+```
+
+#### Usage
+
+```bash
+# With jailbroken device
+frida -U -f com.target.app -l scripts/frida/ios_ssl_bypass.js
+
+# Combined with universal bypass (covers both platforms)
+frida -U -f com.target.app \
+  -l scripts/frida/universal_ssl_bypass.js \
+  -l scripts/frida/ios_ssl_bypass.js
+```
+
+### iOS Jailbreak Detection Bypass
+
+Create `scripts/frida/ios_jailbreak_bypass.js`:
+
+```javascript
+// iOS Jailbreak Detection Bypass
+
+if (ObjC.available) {
+    console.log("[*] iOS Jailbreak Bypass loaded");
+
+    // Common file paths checked for jailbreak
+    var jailbreakPaths = [
+        "/Applications/Cydia.app",
+        "/Applications/Sileo.app",
+        "/usr/sbin/sshd",
+        "/usr/bin/ssh",
+        "/usr/libexec/sftp-server",
+        "/bin/bash",
+        "/etc/apt",
+        "/private/var/lib/apt",
+        "/private/var/lib/cydia",
+        "/private/var/stash",
+        "/var/lib/dpkg/info",
+        "/var/jb"
+    ];
+
+    // Hook NSFileManager fileExistsAtPath:
+    var NSFileManager = ObjC.classes.NSFileManager;
+    Interceptor.attach(NSFileManager['- fileExistsAtPath:'].implementation, {
+        onEnter: function(args) {
+            this.path = ObjC.Object(args[2]).toString();
+        },
+        onLeave: function(retval) {
+            for (var i = 0; i < jailbreakPaths.length; i++) {
+                if (this.path.indexOf(jailbreakPaths[i]) !== -1) {
+                    console.log("[+] Blocked jailbreak check: " + this.path);
+                    retval.replace(0);
+                    return;
+                }
+            }
+        }
+    });
+
+    // Hook canOpenURL for cydia:// scheme
+    var UIApplication = ObjC.classes.UIApplication;
+    Interceptor.attach(UIApplication['- canOpenURL:'].implementation, {
+        onEnter: function(args) {
+            this.url = ObjC.Object(args[2]).toString();
+        },
+        onLeave: function(retval) {
+            if (this.url.indexOf("cydia://") !== -1 ||
+                this.url.indexOf("sileo://") !== -1) {
+                console.log("[+] Blocked canOpenURL: " + this.url);
+                retval.replace(0);
+            }
+        }
+    });
+
+    // Hook fork() - some apps check if fork succeeds
+    var fork = Module.findExportByName(null, "fork");
+    if (fork) {
+        Interceptor.attach(fork, {
+            onLeave: function(retval) {
+                console.log("[+] fork() blocked");
+                retval.replace(-1);
+            }
+        });
+    }
+
+    console.log("[*] iOS jailbreak bypass hooks installed");
+}
+```
+
+### iOS-Specific Analysis Checklist
+
+- [ ] Extract IPA and locate `main.jsbundle`
+- [ ] Verify if Hermes bytecode or plain JavaScript
+- [ ] Analyze bundle with r2hermes/hermes-dec
+- [ ] Check `Info.plist` for URL schemes (deep links)
+- [ ] Check for App Transport Security (ATS) exceptions
+- [ ] Analyze Keychain usage
+- [ ] Check entitlements for sensitive capabilities
+- [ ] Test on jailbroken device with Frida
+- [ ] Bypass SSL pinning and jailbreak detection
+- [ ] Intercept traffic with Burp Suite
+
+### iOS Info.plist Analysis
+
+```bash
+# Extract and analyze Info.plist
+plutil -convert xml1 extracted_ipa/Payload/*.app/Info.plist -o Info_readable.plist
+
+# Check for ATS exceptions (allows HTTP)
+grep -A 10 "NSAppTransportSecurity" Info_readable.plist
+
+# Check URL schemes
+grep -A 20 "CFBundleURLTypes" Info_readable.plist
+
+# Check for sensitive entitlements
+codesign -d --entitlements :- extracted_ipa/Payload/*.app/ 2>/dev/null
+```
+
+### References
+
+- [Palera1n](https://palera.in/) - Jailbreak for A8-A11 devices
+- [Dopamine](https://ellekit.space/dopamine/) - Jailbreak for A12+ devices
+- [OWASP MASTG - Objection for iOS](https://mas.owasp.org/MASTG/tools/ios/MASTG-TOOL-0074/)
+- [OWASP MASTG - Frida Gadget Injection](https://mas.owasp.org/MASTG/techniques/ios/MASTG-TECH-0090/)
+- [Frida iOS Pinning Disable (Codeshare)](https://codeshare.frida.re/@snooze6/ios-pinning-disable/)
+- [iOS Pentesting Cheat Sheet](https://www.virtuesecurity.com/kb/ios-frida-objection-pentesting-cheat-sheet/)
 
 ---
 

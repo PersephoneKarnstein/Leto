@@ -1,8 +1,10 @@
 # Frida Scripts for Hermes/React Native Analysis
 
-This directory contains Frida scripts for dynamic analysis of React Native and Hermes-based Android applications.
+This directory contains Frida scripts for dynamic analysis of React Native and Hermes-based Android and iOS applications.
 
 ## Scripts Overview
+
+### Android Scripts
 
 | Script | Purpose |
 |--------|---------|
@@ -12,6 +14,13 @@ This directory contains Frida scripts for dynamic analysis of React Native and H
 | `detect_frameworks.js` | Detect frameworks, libraries, and SDKs |
 | `hermes_hooks.js` | React Native bridge and network hooks |
 | `ssl_bypass.js` | Basic SSL pinning bypass (original) |
+
+### iOS Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `ios_ssl_bypass.js` | iOS SSL pinning bypass (TrustKit, AFNetworking, SecTrust) |
+| `ios_jailbreak_bypass.js` | iOS jailbreak detection bypass |
 
 ## Usage
 
@@ -132,6 +141,49 @@ Detects:
    });
    ```
 
+## iOS Usage
+
+### Jailbroken Device
+
+```bash
+# Install Frida on jailbroken device via Sileo/Cydia
+# Add repo: https://build.frida.re/
+
+# Connect from computer
+frida -U -f com.example.app -l ios_ssl_bypass.js
+
+# Combined iOS bypass
+frida -U -f com.example.app -l ios_ssl_bypass.js -l ios_jailbreak_bypass.js
+```
+
+### Non-Jailbroken (Gadget Injection)
+
+```bash
+# Use objection to patch IPA
+objection patchipa --source app.ipa --codesign-signature "Your Cert"
+
+# Install patched IPA and connect
+objection -g "App Name" explore
+```
+
+### ios_ssl_bypass.js
+
+Bypasses iOS SSL certificate pinning for:
+- TrustKit (TSKPinningValidator)
+- AFNetworking (AFSecurityPolicy)
+- NSURLSession delegates
+- SecTrustEvaluate/SecTrustEvaluateWithError
+- OpenSSL direct usage
+
+### ios_jailbreak_bypass.js
+
+Bypasses iOS jailbreak detection:
+- NSFileManager file existence checks
+- UIApplication canOpenURL (cydia://, sileo://)
+- stat/lstat/access/fopen hooks
+- fork() sandbox escape check
+- dyld library enumeration
+
 ## Sources
 
 These scripts are based on popular scripts from [Frida CodeShare](https://codeshare.frida.re/):
@@ -139,6 +191,8 @@ These scripts are based on popular scripts from [Frida CodeShare](https://codesh
 - [frida-multiple-unpinning](https://codeshare.frida.re/@akabe1/frida-multiple-unpinning/) by @akabe1
 - [fridantiroot](https://codeshare.frida.re/@dzonerzy/fridantiroot/) by @dzonerzy
 - [Universal Android SSL Pinning Bypass](https://codeshare.frida.re/@pcipolloni/universal-android-ssl-pinning-bypass-with-frida/) by @pcipolloni
+- [iOS Jailbreak Detection Bypass](https://codeshare.frida.re/@DevTraleski/ios-jailbreak-detection-bypass-palera1n/) by @DevTraleski
+- [iOS Pinning Disable](https://codeshare.frida.re/@snooze6/ios-pinning-disable/) by @snooze6
 
 ## License
 
