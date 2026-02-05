@@ -7,6 +7,8 @@ description: Analyze Hermes bytecode in React Native Android apps. Disassemble, 
 
 Toolkit for reverse engineering React Native **Android** applications compiled with Meta's Hermes JavaScript engine.
 
+**For iOS analysis, see [SKILL-ios.md](SKILL-ios.md).**
+
 ---
 
 ## Quick Start
@@ -334,3 +336,28 @@ Always manually review findings.
 - [ ] Hermes bundle - API endpoints, tokens
 - [ ] Deep link handlers - intent injection
 - [ ] WebView usage - JavaScript interfaces
+
+---
+
+## Platform Differences
+
+| Aspect | Android | iOS |
+|--------|---------|-----|
+| Bundle file | `assets/index.android.bundle` | `main.jsbundle` |
+| Package format | APK (zip) | IPA (zip) |
+| Root access | Rooted emulator | Jailbroken device |
+| Dynamic instrumentation | Frida + frida-server | Frida + jailbreak or gadget |
+| Emulation | Android Emulator (full) | iOS Simulator (limited) |
+| Analysis script | `analyze_apk.py` | `analyze_ipa.py` |
+| Tool checker | `check_tools.py` | `check_tools_ios.py` |
+
+---
+
+## References
+
+- [OWASP MASTG - Android](https://mas.owasp.org/MASTG/)
+- [Frida Android](https://frida.re/docs/android/)
+- [Frida Codeshare](https://codeshare.frida.re/)
+- [Hermes GitHub](https://github.com/facebook/hermes)
+- [hermes-dec](https://github.com/nickcopi/hermes-dec)
+- [Maestro](https://maestro.mobile.dev/)

@@ -7,60 +7,34 @@ description: Analyze Hermes bytecode in React Native iOS apps. Disassemble, deco
 
 Toolkit for reverse engineering React Native **iOS** applications compiled with Meta's Hermes JavaScript engine.
 
+**For Android analysis, see [SKILL-android.md](SKILL-android.md).**
+
 ---
 
 ## Quick Start
 
 ```bash
-# 1. Extract IPA
-unzip -o app.ipa -d extracted_ipa/
+# 1. Check tools
+python scripts/check_tools_ios.py
 
-# 2. Find and verify Hermes bundle
-file extracted_ipa/Payload/*.app/main.jsbundle
-# Expected: "Hermes JavaScript bytecode, version 96"
+# 2. Analyze IPA
+python scripts/analyze_ipa.py target.ipa --decompile
 
-# 3. Analyze bundle
-r2 -qc 'pd:ha' main.jsbundle > decompiled.js
+# 3. Verify Hermes version (most reliable method)
+file ./target_analysis/extracted/Payload/*.app/main.jsbundle
 
-# 4. On jailbroken device, run with Frida
+# 4. Check for secrets
+gitleaks dir ./target_analysis/extracted/ -v
+
+# 5. Run with Frida (jailbroken device)
 frida -U -f com.target.app -l scripts/frida/ios_ssl_bypass.js
 ```
 
 **Key files to check:**
 - `main.jsbundle` - Hermes bytecode
 - `Info.plist` - URL schemes, ATS exceptions
-- Entitlements - sensitive capabilities
-- Keychain usage
-
----
-
-## Platform Differences
-
-| Aspect | Android | iOS |
-|--------|---------|-----|
-| Bundle file | `assets/index.android.bundle` | `main.jsbundle` |
-| Package format | APK (zip) | IPA (zip) |
-| Root access | Rooted emulator | Jailbroken device |
-| Dynamic instrumentation | Frida + frida-server | Frida + jailbreak or gadget |
-
-**iOS Emulation Limitations:** Unlike Android, there is no viable iOS emulator for security testing. Projects like ipasim (dormant since 2019, Windows-only) and touchHLE (only supports iPhone OS 2.x-3.0 retro games) are NOT suitable. For dynamic analysis, use:
-- **Jailbroken physical device** (recommended for full testing)
-- **iOS Simulator** (for apps you can build yourself - see below)
-- **Frida Gadget** (inject into IPA for non-jailbroken devices)
-
----
-
-## Tool Ecosystem
-
-| Tool | Purpose | Install |
-|------|---------|---------|
-| **r2hermes** | Disassemble/decompile Hermes | `r2pm -ci r2hermes` |
-| **hermes-dec** | Decompile to JS (binary: `hbc-decompiler`) | `pip install git+https://github.com/P1sec/hermes-dec` |
-| **hbctool** | Disassemble/patch bytecode | `pip install hbctool` |
-| **frida** | Runtime instrumentation | `pip install frida-tools` |
-| **objection** | IPA patching, exploration | `pip install objection` |
-| **Xcode** | iOS Simulator, build tools | App Store (15GB+) |
-| **Maestro** | UI automation | `curl -fsSL "https://get.maestro.mobile.dev" \| bash` |
+- `Entitlements` - Sensitive capabilities
+- `PrivacyInfo.xcprivacy` - Privacy manifest (iOS 17+)
 
 ---
 
@@ -88,6 +62,21 @@ lipo -info Payload/*.app/AppName
 | **Jailbroken device** | Any app, full Frida | Physical device + jailbreak |
 | **Frida Gadget** | Patched IPAs | Xcode + dev certificate |
 
+---
+
+## Tool Ecosystem
+
+| Tool | Purpose | Install |
+|------|---------|---------|
+| **r2hermes** | Disassemble/decompile Hermes | `r2pm -ci r2hermes` |
+| **hermes-dec** | Decompile to JS (binary: `hbc-decompiler`) | `pip install git+https://github.com/P1sec/hermes-dec` |
+| **hbctool** | Disassemble/patch bytecode | `pip install hbctool` |
+| **frida** | Runtime instrumentation | `pip install frida-tools` |
+| **objection** | IPA patching, exploration | `pip install objection` |
+| **Xcode** | iOS Simulator, build tools | App Store (15GB+) |
+| **Maestro** | UI automation | `curl -fsSL "https://get.maestro.mobile.dev" \| bash` |
+| **gitleaks** | Secret scanning | `brew install gitleaks` |
+
 ### Xcode Requirements
 
 **Full Xcode required** for iOS Simulator (not just Command Line Tools):
@@ -106,9 +95,102 @@ xcodebuild -downloadPlatform iOS
 
 ---
 
-## IPA Extraction
+## Analysis Workflow
 
-### Extract Bundle from IPA
+### Phase 1: Setup (One-time)
+
+```bash
+# Check all tools
+python scripts/check_tools_ios.py --install-help
+
+# Verify Xcode configuration
+xcode-select -p
+xcrun simctl list runtimes  # Should show iOS runtimes
+```
+
+### Phase 2: Automated Analysis
+
+```bash
+# Full automated analysis
+python scripts/analyze_ipa.py target.ipa --decompile
+
+# IMPORTANT: Verify Hermes version with file command
+file ./target_analysis/extracted/Payload/*.app/main.jsbundle
+# Expected: "Hermes JavaScript bytecode, version 96"
+```
+
+The analyzer extracts:
+- IPA contents and app bundle
+- Binary architecture (device vs simulator)
+- Info.plist (ATS, URL schemes, permissions)
+- Entitlements (capabilities, keychain groups)
+- PrivacyInfo.xcprivacy (iOS 17+ privacy manifest)
+- Hermes bundle and version
+- API endpoints and secrets
+
+### Phase 3: Secret Scanning
+
+```bash
+# Scan extracted IPA for secrets
+gitleaks dir ./target_analysis/extracted/ -v > gitleaks_results.txt
+
+# Check plist files for hardcoded values
+plutil -p ./target_analysis/extracted/Payload/*.app/Info.plist | grep -iE 'api|key|secret'
+
+# Scan embedded frameworks
+find ./target_analysis/extracted/ -name "*.plist" -exec plutil -p {} \; | grep -iE 'key|token|secret'
+
+# String extraction from Hermes bundle
+strings ./target_analysis/extracted/Payload/*.app/main.jsbundle | grep -E '^https?://' | sort -u
+```
+
+**Note:** gitleaks/trufflehog produce false positives. Common false positives:
+- Unicode emoji sequences
+- Build verification tokens
+- Base64-encoded non-secrets
+
+Always manually review findings.
+
+### Phase 4: Hermes Analysis
+
+```bash
+# Decompile with r2hermes
+r2 -qc 'pd:ha' main.jsbundle > decompiled.js
+
+# Extract strings
+r2 -qc 'iz~http' main.jsbundle
+
+# For large bundles (>20MB), use strings command instead
+strings main.jsbundle | grep -E 'api|endpoint|token'
+```
+
+### Phase 5: Dynamic Analysis (Choose One)
+
+**Option A: Simulator** (apps you build)
+```bash
+xcrun simctl boot "iPhone 15 Pro"
+open -a Simulator
+xcrun simctl install booted /path/to/App.app
+xcrun simctl launch booted com.bundle.id
+```
+
+**Option B: Jailbroken Device** (recommended for real apps)
+```bash
+frida -U -f com.target.app -l scripts/frida/ios_ssl_bypass.js
+```
+
+**Option C: Frida Gadget** (non-jailbroken)
+```bash
+objection patchipa --source app.ipa --codesign-signature "Apple Development: you@email.com"
+ios-deploy --bundle app-frida-codesigned.ipa
+objection -g "App Name" explore
+```
+
+---
+
+## IPA Extraction (Manual)
+
+If not using `analyze_ipa.py`:
 
 ```bash
 # Unzip IPA
@@ -126,22 +208,41 @@ file main.jsbundle
 # "ASCII text" = Plain JavaScript
 ```
 
-### Analyze iOS Bundle
+---
 
-Same tools work on iOS bundles:
+## Info.plist Analysis
 
 ```bash
-# Decompile with r2hermes
-r2 -qc 'pd:ha' main.jsbundle > decompiled.js
+# Convert to readable format
+plutil -convert xml1 extracted_ipa/Payload/*.app/Info.plist -o Info_readable.plist
 
-# Extract strings
-r2 -qc 'iz~http' main.jsbundle
+# Check ATS exceptions (allows HTTP)
+grep -A 10 "NSAppTransportSecurity" Info_readable.plist
 
-# Use hermes-dec
-hbc-decompiler main.jsbundle output.js
+# Check URL schemes (deep links)
+grep -A 20 "CFBundleURLTypes" Info_readable.plist
 
-# For large bundles
-strings main.jsbundle | grep -E '^https?://'
+# Check entitlements
+codesign -d --entitlements :- extracted_ipa/Payload/*.app/ 2>/dev/null
+```
+
+---
+
+## Privacy Manifest Analysis (iOS 17+)
+
+iOS 17+ apps may include privacy manifests declaring data collection:
+
+```bash
+# Find privacy manifests
+find extracted_ipa/ -name "PrivacyInfo.xcprivacy"
+
+# Parse privacy manifest
+plutil -p extracted_ipa/Payload/*.app/PrivacyInfo.xcprivacy
+
+# Key fields to check:
+# - NSPrivacyAccessedAPITypes: APIs requiring reason
+# - NSPrivacyTrackingDomains: Tracking domains
+# - NSPrivacyCollectedDataTypes: Data collected from users
 ```
 
 ---
@@ -362,6 +463,11 @@ frida-ps -U
 
 # Attach to app
 frida -U -f com.target.app -l scripts/frida/ios_ssl_bypass.js
+
+# Combined bypass (SSL + jailbreak detection)
+cat scripts/frida/ios_ssl_bypass.js \
+    scripts/frida/ios_jailbreak_bypass.js > /tmp/ios_all_bypasses.js
+frida -U -f com.target.app -l /tmp/ios_all_bypasses.js
 ```
 
 ### Option 2: iOS Simulator (Limited)
@@ -388,7 +494,7 @@ frida -p 59734 -l script.js
 2. Find PID with `frida-ps | grep AppName`
 3. Attach with `frida -p PID -l script.js`
 
-### Option 2: Frida Gadget (Non-Jailbroken)
+### Option 3: Frida Gadget (Non-Jailbroken)
 
 Requires macOS with Xcode and Apple Developer account.
 
@@ -401,6 +507,32 @@ ios-deploy --bundle app-frida-codesigned.ipa
 
 # Connect
 objection -g "App Name" explore
+```
+
+---
+
+## Frida Scripts
+
+Pre-built scripts in `scripts/frida/`:
+
+| Script | Purpose |
+|--------|---------|
+| `ios_ssl_bypass.js` | SSL pinning bypass for iOS |
+| `ios_jailbreak_bypass.js` | Jailbreak detection bypass |
+| `universal_ssl_bypass.js` | Cross-platform SSL bypass |
+
+See `scripts/frida/README.md` for full documentation.
+
+### Usage
+
+```bash
+# Single script
+frida -U -f com.target.app -l scripts/frida/ios_ssl_bypass.js
+
+# Combined scripts
+cat scripts/frida/ios_ssl_bypass.js \
+    scripts/frida/ios_jailbreak_bypass.js > /tmp/all.js
+frida -U -f com.target.app -l /tmp/all.js
 ```
 
 ---
@@ -440,155 +572,6 @@ ios hooking watch method "+[KeychainHelper getPassword]" --dump-args
 
 ---
 
-## SSL Pinning Bypass
-
-### Frida Script (ios_ssl_bypass.js)
-
-```javascript
-if (ObjC.available) {
-    console.log("[*] iOS SSL Pinning Bypass");
-
-    // NSURLSession TLS bypass
-    try {
-        var NSURLSessionConfiguration = ObjC.classes.NSURLSessionConfiguration;
-        Interceptor.attach(NSURLSessionConfiguration['- setTLSMinimumSupportedProtocol:'].implementation, {
-            onEnter: function(args) {
-                console.log("[+] Bypassing TLS minimum protocol");
-            }
-        });
-    } catch(e) {}
-
-    // TrustKit bypass
-    try {
-        var TSKPinningValidator = ObjC.classes.TSKPinningValidator;
-        if (TSKPinningValidator) {
-            Interceptor.attach(TSKPinningValidator['- evaluateTrust:forHostname:'].implementation, {
-                onLeave: function(retval) {
-                    console.log("[+] TrustKit bypassed");
-                    retval.replace(0);
-                }
-            });
-        }
-    } catch(e) {}
-
-    // AFNetworking bypass
-    try {
-        var AFSecurityPolicy = ObjC.classes.AFSecurityPolicy;
-        if (AFSecurityPolicy) {
-            Interceptor.attach(AFSecurityPolicy['- setSSLPinningMode:'].implementation, {
-                onEnter: function(args) {
-                    args[2] = ptr(0); // AFSSLPinningModeNone
-                    console.log("[+] AFNetworking pinning disabled");
-                }
-            });
-        }
-    } catch(e) {}
-
-    // Generic SecTrust bypass
-    try {
-        var SecTrustEvaluateWithError = Module.findExportByName("Security", "SecTrustEvaluateWithError");
-        if (SecTrustEvaluateWithError) {
-            Interceptor.attach(SecTrustEvaluateWithError, {
-                onLeave: function(retval) {
-                    retval.replace(1);
-                    console.log("[+] SecTrustEvaluateWithError bypassed");
-                }
-            });
-        }
-    } catch(e) {}
-
-    console.log("[*] iOS SSL bypass hooks installed");
-}
-```
-
----
-
-## Jailbreak Detection Bypass
-
-### Frida Script (ios_jailbreak_bypass.js)
-
-```javascript
-if (ObjC.available) {
-    console.log("[*] iOS Jailbreak Bypass");
-
-    var jailbreakPaths = [
-        "/Applications/Cydia.app",
-        "/Applications/Sileo.app",
-        "/usr/sbin/sshd",
-        "/usr/bin/ssh",
-        "/bin/bash",
-        "/etc/apt",
-        "/private/var/lib/apt",
-        "/private/var/lib/cydia",
-        "/var/jb"
-    ];
-
-    // Hook fileExistsAtPath
-    var NSFileManager = ObjC.classes.NSFileManager;
-    Interceptor.attach(NSFileManager['- fileExistsAtPath:'].implementation, {
-        onEnter: function(args) {
-            this.path = ObjC.Object(args[2]).toString();
-        },
-        onLeave: function(retval) {
-            for (var i = 0; i < jailbreakPaths.length; i++) {
-                if (this.path.indexOf(jailbreakPaths[i]) !== -1) {
-                    console.log("[+] Blocked: " + this.path);
-                    retval.replace(0);
-                    return;
-                }
-            }
-        }
-    });
-
-    // Hook canOpenURL for cydia://
-    var UIApplication = ObjC.classes.UIApplication;
-    Interceptor.attach(UIApplication['- canOpenURL:'].implementation, {
-        onEnter: function(args) {
-            this.url = ObjC.Object(args[2]).toString();
-        },
-        onLeave: function(retval) {
-            if (this.url.indexOf("cydia://") !== -1 ||
-                this.url.indexOf("sileo://") !== -1) {
-                console.log("[+] Blocked canOpenURL: " + this.url);
-                retval.replace(0);
-            }
-        }
-    });
-
-    // Block fork()
-    var fork = Module.findExportByName(null, "fork");
-    if (fork) {
-        Interceptor.attach(fork, {
-            onLeave: function(retval) {
-                retval.replace(-1);
-            }
-        });
-    }
-
-    console.log("[*] Jailbreak bypass hooks installed");
-}
-```
-
----
-
-## Info.plist Analysis
-
-```bash
-# Convert to readable format
-plutil -convert xml1 extracted_ipa/Payload/*.app/Info.plist -o Info_readable.plist
-
-# Check ATS exceptions (allows HTTP)
-grep -A 10 "NSAppTransportSecurity" Info_readable.plist
-
-# Check URL schemes (deep links)
-grep -A 20 "CFBundleURLTypes" Info_readable.plist
-
-# Check entitlements
-codesign -d --entitlements :- extracted_ipa/Payload/*.app/ 2>/dev/null
-```
-
----
-
 ## r2hermes Commands
 
 ```bash
@@ -621,17 +604,36 @@ Use `strings` for extraction:
 strings main.jsbundle | grep -E '^https?://'
 ```
 
-### Frida can't connect
+### Frida can't connect to device
 
 - Verify jailbreak is active
 - Check Frida is installed from build.frida.re
 - Try `killall frida-server && frida-server -D &`
+
+### Frida can't connect to simulator
+
+- Don't use `-D simulator` (doesn't work in recent Frida)
+- Find PID with `frida-ps | grep AppName`
+- Use `frida -p PID -l script.js`
 
 ### App crashes with Frida gadget
 
 - Check code signing is correct
 - Verify provisioning profile includes device UDID
 - Try with `--pause` flag to attach debugger
+
+### Xcode signing issues
+
+```bash
+# List available signing identities
+security find-identity -v -p codesigning
+
+# Check provisioning profiles
+ls ~/Library/MobileDevice/Provisioning\ Profiles/
+
+# Decode provisioning profile
+security cms -D -i profile.mobileprovision
+```
 
 ---
 
@@ -642,11 +644,32 @@ strings main.jsbundle | grep -E '^https?://'
 - [ ] Analyze bundle with r2hermes/hermes-dec
 - [ ] Check `Info.plist` for URL schemes
 - [ ] Check App Transport Security (ATS) exceptions
+- [ ] Analyze PrivacyInfo.xcprivacy (iOS 17+)
 - [ ] Analyze Keychain usage
 - [ ] Check entitlements for sensitive capabilities
+- [ ] Run secret scanner (gitleaks)
 - [ ] Test on jailbroken device with Frida
 - [ ] Bypass SSL pinning and jailbreak detection
 - [ ] Intercept traffic with Burp Suite
+
+---
+
+## Platform Differences
+
+| Aspect | Android | iOS |
+|--------|---------|-----|
+| Bundle file | `assets/index.android.bundle` | `main.jsbundle` |
+| Package format | APK (zip) | IPA (zip) |
+| Root access | Rooted emulator | Jailbroken device |
+| Dynamic instrumentation | Frida + frida-server | Frida + jailbreak or gadget |
+| Emulation | Android Emulator (full) | iOS Simulator (limited) |
+| Analysis script | `analyze_apk.py` | `analyze_ipa.py` |
+| Tool checker | `check_tools.py` | `check_tools_ios.py` |
+
+**iOS Emulation Limitations:** Unlike Android, there is no viable iOS emulator for security testing. Projects like ipasim (dormant since 2019, Windows-only) and touchHLE (only supports iPhone OS 2.x-3.0 retro games) are NOT suitable. For dynamic analysis, use:
+- **Jailbroken physical device** (recommended for full testing)
+- **iOS Simulator** (for apps you can build yourself)
+- **Frida Gadget** (inject into IPA for non-jailbroken devices)
 
 ---
 
