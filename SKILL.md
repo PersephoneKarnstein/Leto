@@ -12,34 +12,35 @@ Comprehensive toolkit for reverse engineering React Native **Android and iOS** a
 ## Table of Contents
 
 1. [Quick Start](#quick-start)
-2. [When to Use](#when-to-use)
-3. [Tool Ecosystem](#tool-ecosystem)
-4. [Path Confirmation & Tool Check](#critical-path-confirmation)
-5. [Installation](#installation-prompt-user-first)
-6. [Penetration Testing Methodology](#penetration-testing-methodology)
-7. [Security Audit Checklist](#security-audit-checklist)
-8. [Static Analysis - Android](#static-analysis-workflows)
+2. [MANDATORY: Comprehensive Analysis Workflow](#mandatory-comprehensive-analysis-workflow)
+3. [When to Use](#when-to-use)
+4. [Tool Ecosystem](#tool-ecosystem)
+5. [Path Confirmation & Tool Check](#critical-path-confirmation)
+6. [Installation](#installation-prompt-user-first)
+7. [Penetration Testing Methodology](#penetration-testing-methodology)
+8. [Security Audit Checklist](#security-audit-checklist)
+9. [Static Analysis - Android](#static-analysis-workflows)
    - [JADX Integration](#jadx-integration)
    - [Large Bundle Handling](#important-large-bundle-handling)
    - [APK Extraction](#apk-extraction-workflow)
    - [Automated APK Analysis](#automated-apk-analysis)
    - [Source Map Analysis](#source-map-analysis)
-9. [iOS Analysis](#ios-analysis)
-   - [IPA Extraction](#ipa-extraction)
-   - [iOS Jailbreak Tools](#ios-jailbreak-tools)
-   - [Frida on iOS](#frida-on-ios)
-   - [Objection for iOS](#objection-for-ios)
-   - [iOS SSL Pinning Bypass](#ios-ssl-pinning-bypass)
-10. [Dynamic Analysis](#dynamic-analysis--runtime-instrumentation)
+10. [iOS Analysis](#ios-analysis)
+    - [IPA Extraction](#ipa-extraction)
+    - [iOS Jailbreak Tools](#ios-jailbreak-tools)
+    - [Frida on iOS](#frida-on-ios)
+    - [Objection for iOS](#objection-for-ios)
+    - [iOS SSL Pinning Bypass](#ios-ssl-pinning-bypass)
+11. [Dynamic Analysis](#dynamic-analysis--runtime-instrumentation)
     - [Maestro UI Automation](#maestro-ui-automation)
     - [Burp Suite Traffic Interception](#burp-suite-traffic-interception)
     - [Frida Setup & Scripts](#frida-setup-for-hermes-apps)
-11. [Emulator Setup (Android)](#emulator-setup-for-penetration-testing)
-12. [Patching & Modification](#patching--modification-workflow)
-13. [Troubleshooting](#troubleshooting)
-14. [Security Report Writing](#security-report-writing)
-15. [Command Reference](#r2hermes-command-reference)
-16. [Resources](#resources)
+12. [Emulator Setup (Android)](#emulator-setup-for-penetration-testing)
+13. [Patching & Modification](#patching--modification-workflow)
+14. [Troubleshooting](#troubleshooting)
+15. [Security Report Writing](#security-report-writing)
+16. [Command Reference](#r2hermes-command-reference)
+17. [Resources](#resources)
 
 ---
 
@@ -86,6 +87,178 @@ frida -U -f com.target.app \
 
 ---
 
+## MANDATORY: Comprehensive Analysis Workflow
+
+**ALWAYS follow this systematic workflow to ensure all tools are utilized.**
+
+### Phase 1: Pre-Analysis Setup
+
+```bash
+# REQUIRED: Verify tool availability first
+python scripts/check_tools.py
+
+# REQUIRED: Check host architecture BEFORE downloading AVDs/system images
+# This avoids downloading large (1GB+) images for wrong architecture
+uname -m
+# arm64 → use arm64-v8a system images (Apple Silicon Macs)
+# x86_64 → use x86_64 system images (Intel Macs/PCs)
+
+# Example for ARM Mac:
+# sdkmanager "system-images;android-30;google_apis;arm64-v8a"
+# Example for Intel:
+# sdkmanager "system-images;android-30;google_apis;x86_64"
+
+# Note any missing tools before proceeding
+# Install critical missing tools or document limitations
+```
+
+### Phase 2: Automated Analysis (Use Scripts First)
+
+```bash
+# REQUIRED: Use the automated APK analyzer - do NOT skip this
+python scripts/analyze_apk.py target.apk --output-dir ./analysis --decompile
+
+# REQUIRED: Use bundle analyzer for Hermes-specific details
+python scripts/analyze_bundle.py ./analysis/extracted/assets/index.android.bundle --json --strings > bundle_analysis.json
+```
+
+### Phase 3: Hermes Version Detection
+
+**Use multiple methods to confirm Hermes version (tools may disagree):**
+
+```bash
+# Method 1: file command (most reliable for version detection)
+file ./analysis/extracted/assets/index.android.bundle
+# Example output: Hermes JavaScript bytecode, version 96
+
+# Method 2: analyze_bundle.py header parsing
+python scripts/analyze_bundle.py bundle.hbc --json | jq '.header'
+
+# Method 3: r2hermes info (may fail on large bundles)
+r2 -qc 'pd:hi' bundle.hbc
+
+# Method 4: hexdump verification
+xxd bundle.hbc | head -1
+# Look for: c61f bc03 (Hermes magic)
+```
+
+**Note:** For large bundles (>20MB), r2hermes may have parsing issues. Fall back to `file` command and `strings` extraction.
+
+### Phase 4: Static Analysis Toolchain
+
+```bash
+# 4a. JADX for Java/Kotlin decompilation
+jadx target.apk -d ./jadx_output/
+
+# 4b. Hermes decompilation (try multiple tools)
+# Try r2hermes first:
+r2 -qc 'pd:hf' ./analysis/extracted/assets/index.android.bundle > functions.txt
+
+# If r2hermes fails on large bundles, use hbc-decompiler (from hermes-dec package):
+hbc-decompiler ./analysis/extracted/assets/index.android.bundle > decompiled.js
+
+# 4c. String extraction (essential for API discovery)
+strings ./analysis/extracted/assets/index.android.bundle | grep -E '^https?://' | sort -u > urls.txt
+strings ./analysis/extracted/assets/index.android.bundle | grep -E '/api/|/v[0-9]+/' | sort -u > api_paths.txt
+strings ./analysis/extracted/assets/index.android.bundle | grep -iE 'key|secret|token|password' > potential_secrets.txt
+
+# 4d. Secret scanning (use multiple tools - they find different things)
+gitleaks detect --source ./analysis/apktool/ --no-git -v > gitleaks_results.txt
+trufflehog filesystem ./analysis/apktool/res/ --no-update > trufflehog_results.txt
+
+# 4e. Manual secret check (scanners miss these!)
+grep -iE 'api.*key|firebase|google_api' ./analysis/apktool/res/values/strings.xml
+cat ./jadx_output/sources/*/BuildConfig.java 2>/dev/null
+```
+
+### Phase 5: Dynamic Analysis Preparation
+
+```bash
+# 5a. Patch APK for Frida (if needed for GMS/Play Services apps)
+objection patchapk -s target.apk
+
+# 5b. Prepare Frida scripts (load all relevant bypasses)
+cat scripts/frida/universal_ssl_bypass.js \
+    scripts/frida/root_bypass.js \
+    scripts/frida/gms_firebase_bypass.js > /tmp/all_bypasses.js
+
+# 5c. Identify app package name
+aapt dump badging target.apk | grep package:
+```
+
+### Phase 6: Runtime Analysis
+
+```bash
+# Start emulator or connect device
+emulator -avd pentest_api30 -writable-system &
+
+# Install and run with Frida
+adb install target.apk
+frida -U -f com.target.app -l /tmp/all_bypasses.js
+
+# Detect frameworks
+frida -U -f com.target.app -l scripts/frida/detect_frameworks.js
+
+# Hook React Native bridge
+frida -U -f com.target.app -l scripts/frida/hermes_hooks.js
+```
+
+### Phase 7: Report Generation
+
+**IMPORTANT: Only generate the final report AFTER completing ALL previous phases.**
+
+The report must include findings from:
+- Static analysis (JADX, apktool, Hermes decompilation)
+- Secret scanning (gitleaks, trufflehog, AND manual review)
+- API endpoint extraction
+- Dynamic analysis (if device/emulator available)
+
+```bash
+# Verify all analysis outputs exist before generating report:
+echo "=== Verifying Analysis Completeness ==="
+ls -la ./analysis/report.json       || echo "MISSING: Automated analysis"
+ls -la ./jadx_output/               || echo "MISSING: JADX decompilation"
+ls -la ./bundle_analysis.json       || echo "MISSING: Bundle analysis"
+ls -la ./urls.txt                   || echo "MISSING: URL extraction"
+ls -la ./api_paths.txt              || echo "MISSING: API paths"
+ls -la ./gitleaks_results.txt       || echo "MISSING: Gitleaks scan"
+ls -la ./trufflehog_results.txt     || echo "MISSING: Trufflehog scan"
+ls -la ./decompiled.js              || echo "MISSING: Hermes decompilation"
+
+# Only proceed with report generation if all checks pass
+```
+
+**Do NOT generate partial reports. Complete all phases first.**
+
+### Tool Usage Checklist
+
+Before completing any analysis, verify you have used:
+
+**Phase 1-2: Setup & Automation**
+- [ ] `scripts/check_tools.py` - Tool availability check
+- [ ] `scripts/analyze_apk.py` - Automated APK workflow
+- [ ] `scripts/analyze_bundle.py` - Bundle-specific analysis
+
+**Phase 3: Version Detection**
+- [ ] `file` command - Hermes version confirmation (most reliable)
+- [ ] Hexdump verification if needed
+
+**Phase 4: Static Analysis**
+- [ ] `jadx` - Java/Kotlin code review
+- [ ] `apktool` - Manifest and resource extraction
+- [ ] `hbc-decompiler` - Hermes decompilation (from hermes-dec package)
+- [ ] `strings` - API endpoint discovery
+- [ ] `gitleaks` - Secret scanning
+- [ ] `trufflehog` - Deep secret scanning
+- [ ] **Manual review** of `strings.xml`, `BuildConfig.java` (scanners miss secrets!)
+
+**Phase 5-6: Dynamic Analysis**
+- [ ] `scripts/frida/*.js` - Appropriate runtime bypasses
+- [ ] `objection patchapk` - If app requires patching
+- [ ] `frida -U -f package -l detect_frameworks.js` - Framework detection
+
+---
+
 ## When to Use
 
 - Analyzing React Native Android/iOS applications
@@ -104,7 +277,7 @@ frida -U -f com.target.app \
 |------|----------|----------|----------|---------|
 | **r2hermes** | C | radare2 integration, decompilation, patching | v51-96 | `r2pm -ci r2hermes` |
 | **hbctool** | Python | Simple disasm/asm workflow | v59,62,74,76 | `pip install hbctool` |
-| **hermes-dec** | Python | Pure Python, no deps, decompiler | v59-84+ | `pip install git+https://github.com/P1sec/hermes-dec` |
+| **hermes-dec** | Python | Pure Python, no deps, decompiler | v59-84+ | `pip install git+https://github.com/P1sec/hermes-dec` (binary: `hbc-decompiler`) |
 | **hermes_rs** | Rust | Type-safe, module extraction, r2 scripts | v76,89-96 | `cargo install hermes_rs` |
 | **hasmer** | C#/.NET | Any version disassembly | All | See hasmer docs (archived) |
 | **heresy** | Rust/TS | Frida runtime instrumentation | Runtime | npm install + build |
@@ -120,6 +293,18 @@ frida -U -f com.target.app \
 | **JADX** | Java decompilation, resource extraction | `brew install jadx` |
 | **r2frida** | Frida integration for radare2, runtime analysis | `r2pm -ci r2frida` |
 | **r2ai** | AI-powered analysis assistant for radare2 | `r2pm -ci r2ai` |
+
+### Secret Detection Tools
+| Tool | Purpose | Install |
+|------|---------|---------|
+| **gitleaks** | Secret scanning in files (API keys, tokens, passwords) | `brew install gitleaks` |
+| **trufflehog** | Deep secret scanning with verification | `brew install trufflehog` |
+| **semgrep** | Static analysis with security rules | `pip install semgrep` |
+
+**Note:** Automated secret scanners miss many findings. Always perform manual review of:
+- `res/values/strings.xml` - hardcoded API keys, Firebase URLs
+- `BuildConfig.java` - build-time secrets
+- Hermes bundle strings - even concatenated strings may contain secrets
 
 ### Version Coverage Matrix
 
@@ -2501,6 +2686,34 @@ r2 -qc 'pd:hi' bundle.hbc | grep version
 # Version 74-76: Use hbctool, r2hermes, or hermes_rs
 # Version 59-62: Use hbctool or hermes-dec
 ```
+
+### r2hermes fails on large bundles (>20MB)
+
+For large bundles (like Discord's 62MB bundle), r2hermes may fail with:
+- "Error reading string tables: String offset/length out of bounds"
+- "No binary loaded in r2"
+- Hangs or memory issues
+
+**Solution - Use alternative detection methods:**
+
+```bash
+# Method 1: file command (MOST RELIABLE for version detection)
+file index.android.bundle
+# Output: Hermes JavaScript bytecode, version 96
+
+# Method 2: Direct string extraction (bypass r2hermes entirely)
+strings index.android.bundle | grep -E '^https?://' | sort -u > urls.txt
+strings index.android.bundle | grep -iE 'api|endpoint|token' > interesting.txt
+
+# Method 3: Chunked extraction for initial analysis
+head -c 2097152 index.android.bundle | strings > head_strings.txt
+tail -c 2097152 index.android.bundle | strings > tail_strings.txt
+
+# Method 4: Use analyze_bundle.py with safe extraction
+python scripts/analyze_bundle.py index.android.bundle --json
+```
+
+**Key Learning:** The `file` command reliably identifies Hermes version even when specialized tools fail. Always verify with `file` before reporting version issues.
 
 ### "Hash mismatch after patching"
 

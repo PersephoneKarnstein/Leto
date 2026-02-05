@@ -226,6 +226,30 @@ TOOLS = {
         },
         "required_for": ["APK alignment", "APK patching"],
     },
+    "gitleaks": {
+        "check_cmd": ["gitleaks", "version"],
+        "install": {
+            "macos": "brew install gitleaks",
+            "linux": "brew install gitleaks",
+        },
+        "required_for": ["secret scanning", "API key detection"],
+        "optional": True,
+    },
+    "trufflehog": {
+        "check_cmd": ["trufflehog", "--version"],
+        "install": {
+            "macos": "brew install trufflehog",
+            "linux": "brew install trufflehog",
+        },
+        "required_for": ["deep secret scanning", "credential detection"],
+        "optional": True,
+    },
+    "semgrep": {
+        "check_cmd": ["semgrep", "--version"],
+        "install": {"all": "pip install semgrep"},
+        "required_for": ["static analysis", "security rule scanning"],
+        "optional": True,
+    },
 }
 
 
