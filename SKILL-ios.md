@@ -59,6 +59,50 @@ frida -U -f com.target.app -l scripts/frida/ios_ssl_bypass.js
 | **hbctool** | Disassemble/patch bytecode | `pip install hbctool` |
 | **frida** | Runtime instrumentation | `pip install frida-tools` |
 | **objection** | IPA patching, exploration | `pip install objection` |
+| **Xcode** | iOS Simulator, build tools | App Store (15GB+) |
+| **Maestro** | UI automation | `curl -fsSL "https://get.maestro.mobile.dev" \| bash` |
+
+---
+
+## Critical: iOS Testing Approaches
+
+Unlike Android, iOS has fundamental platform restrictions that affect testing:
+
+### App Store IPAs Cannot Run in Simulator
+
+**This is the most important iOS limitation.** App Store/distribution IPAs are built for **device architecture only** (arm64-device) and will NOT run in iOS Simulator.
+
+```bash
+# Check binary architecture
+lipo -info Payload/*.app/AppName
+# App Store: "Non-fat file ... is architecture: arm64"
+# Simulator-compatible: "... x86_64 arm64" (multiple slices)
+```
+
+### Choose Your Testing Approach
+
+| Approach | What You Can Test | Requirements |
+|----------|-------------------|--------------|
+| **Static only** | Bundle analysis, decompilation, secrets | Just the IPA |
+| **Simulator** | Apps you build from source | Xcode + source code |
+| **Jailbroken device** | Any app, full Frida | Physical device + jailbreak |
+| **Frida Gadget** | Patched IPAs | Xcode + dev certificate |
+
+### Xcode Requirements
+
+**Full Xcode required** for iOS Simulator (not just Command Line Tools):
+```bash
+# Check current setup
+xcode-select -p
+# "/Library/Developer/CommandLineTools" = NO simulator
+# "/Applications/Xcode.app/..." = Simulator available
+
+# Switch to full Xcode after install
+sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+# Download iOS runtime if needed
+xcodebuild -downloadPlatform iOS
+```
 
 ---
 
@@ -242,9 +286,72 @@ xcrun simctl ui booted appearance light
 
 ---
 
+## Maestro for iOS
+
+Maestro works with iOS Simulator for UI automation testing.
+
+### Setup
+
+```bash
+# Install Maestro
+curl -fsSL "https://get.maestro.mobile.dev" | bash
+
+# Download sample iOS app (has simulator architecture)
+maestro download-samples
+unzip -o samples/sample.zip -d /tmp/maestro_sample/
+
+# Install in simulator
+xcrun simctl install booted /tmp/maestro_sample/Wikipedia.app
+```
+
+### Basic Flow
+
+```yaml
+# ios_test.yaml
+appId: org.wikimedia.wikipedia
+tags:
+  - ios
+---
+- launchApp
+- takeScreenshot: step1_launch
+- tapOn: "Search"
+- inputText: "React Native"
+- takeScreenshot: step2_search
+- stopApp
+```
+
+### Run Tests
+
+```bash
+# Run single flow
+maestro test ios_test.yaml
+
+# Run with specific simulator
+maestro test --platform ios --udid "DEVICE-UUID" ios_test.yaml
+
+# Record video of flow
+maestro record ios_test.yaml
+
+# Start Maestro MCP server for AI agents
+maestro mcp
+
+# Find test results and screenshots
+ls ~/.maestro/tests/
+```
+
+### Limitations
+
+- Requires **full Xcode** (not Command Line Tools)
+- Only works with **simulator-compatible .app** bundles
+- Cannot test App Store IPAs directly
+- For jailbroken device testing, use Frida instead
+- Test results saved to `~/.maestro/tests/YYYY-MM-DD_HHMMSS/`
+
+---
+
 ## Frida on iOS
 
-### Option 1: Jailbroken Device
+### Option 1: Jailbroken Device (Recommended)
 
 ```bash
 # Add Frida repo to Sileo/Cydia: https://build.frida.re/
@@ -256,6 +363,30 @@ frida-ps -U
 # Attach to app
 frida -U -f com.target.app -l scripts/frida/ios_ssl_bypass.js
 ```
+
+### Option 2: iOS Simulator (Limited)
+
+Frida can attach to simulator processes but requires using **PID** (not device name):
+
+```bash
+# Launch app first
+xcrun simctl launch booted com.bundle.id
+
+# Find PID (simulator apps appear as local processes)
+frida-ps | grep "AppName"
+# Output: 59734  AppName
+
+# Attach by PID (WORKS)
+frida -p 59734 -l script.js
+
+# NOTE: -D simulator does NOT work in recent Frida versions
+# frida -D simulator -n "AppName"  # FAILS: Device 'simulator' not found
+```
+
+**Recommended approach for simulator:**
+1. Launch app via `xcrun simctl launch booted bundle.id`
+2. Find PID with `frida-ps | grep AppName`
+3. Attach with `frida -p PID -l script.js`
 
 ### Option 2: Frida Gadget (Non-Jailbroken)
 
@@ -523,5 +654,9 @@ strings main.jsbundle | grep -E '^https?://'
 
 - [Palera1n](https://palera.in/) - Jailbreak for A8-A11
 - [Dopamine](https://ellekit.space/dopamine/) - Jailbreak for A12+
+- [nathanlr Guide](https://ios.cfw.guide/installing-nathanlr/) - Semi-jailbreak for A12+
 - [OWASP MASTG - iOS](https://mas.owasp.org/MASTG/)
 - [Frida iOS Codeshare](https://codeshare.frida.re/)
+- [Frida iOS Simulator Issues](https://github.com/frida/frida/issues/1830)
+- [Maestro iOS](https://maestro.mobile.dev/)
+- [Mattermost Mobile Build](https://developers.mattermost.com/contribute/more-info/mobile/developer-setup/)

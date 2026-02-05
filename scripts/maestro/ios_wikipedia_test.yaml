@@ -1,0 +1,55 @@
+# iOS Simulator Test Flow - Wikipedia App
+# Requires: Xcode with iOS Simulator, Wikipedia.app installed
+# Run: maestro test scripts/maestro/ios_wikipedia_test.yaml
+
+appId: org.wikimedia.wikipedia
+tags:
+  - ios
+  - simulator
+  - test
+---
+# Launch the app
+- launchApp
+
+# Take initial screenshot
+- takeScreenshot: ios_test_1_launch
+
+# Wait for app to load
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 10000
+
+# Take screenshot of loaded state
+- takeScreenshot: ios_test_2_loaded
+
+# Try to find and tap on search
+- runFlow:
+    when:
+      visible: "Search"
+    commands:
+      - tapOn: "Search"
+      - takeScreenshot: ios_test_3_search
+
+# Try typing in search
+- runFlow:
+    when:
+      visible:
+        id: ".*search.*"
+    commands:
+      - tapOn:
+          id: ".*search.*"
+      - inputText: "React Native"
+      - takeScreenshot: ios_test_4_search_results
+
+# Navigate back or close
+- runFlow:
+    when:
+      visible: "Cancel"
+    commands:
+      - tapOn: "Cancel"
+
+# Final screenshot
+- takeScreenshot: ios_test_5_final
+
+# Stop the app
+- stopApp
