@@ -43,6 +43,11 @@ frida -U -f com.target.app -l scripts/frida/ios_ssl_bypass.js
 | Root access | Rooted emulator | Jailbroken device |
 | Dynamic instrumentation | Frida + frida-server | Frida + jailbreak or gadget |
 
+**iOS Emulation Limitations:** Unlike Android, there is no viable iOS emulator for security testing. Projects like ipasim (dormant since 2019, Windows-only) and touchHLE (only supports iPhone OS 2.x-3.0 retro games) are NOT suitable. For dynamic analysis, use:
+- **Jailbroken physical device** (recommended for full testing)
+- **iOS Simulator** (for apps you can build yourself - see below)
+- **Frida Gadget** (inject into IPA for non-jailbroken devices)
+
 ---
 
 ## Tool Ecosystem
@@ -103,7 +108,10 @@ strings main.jsbundle | grep -E '^https?://'
 |------|---------|--------------|------|
 | **Palera1n** | A8-A11 | 15.0-17.x | Semi-tethered |
 | **Dopamine** | A12-A16 | 15.0-16.6.1 | Semi-untethered |
+| **nathanlr** | A12+ | 16.5.1-17.0 | Semi-jailbreak |
 | **Checkra1n** | A7-A11 | 12.0-14.8.1 | Semi-tethered |
+
+**Note on nathanlr:** Semi-jailbreak providing limited functionality (no tweak injection). Useful for Frida access on newer devices. Install via [ios.cfw.guide](https://ios.cfw.guide/installing-nathanlr/).
 
 ### Palera1n Setup (A8-A11)
 
@@ -122,6 +130,114 @@ strings main.jsbundle | grep -E '^https?://'
 # Install Dopamine.tipa via TrollStore
 # Jailbreak from Dopamine app
 # Install Sileo, then Frida
+```
+
+---
+
+## iOS Simulator (Development Testing)
+
+For apps you can build yourself (your own apps or open-source), iOS Simulator provides a testing environment without jailbreak. Note: App Store apps cannot run in Simulator.
+
+### Basic Commands
+
+```bash
+# List available simulators
+xcrun simctl list devices
+
+# Boot a simulator
+xcrun simctl boot "iPhone 15 Pro"
+
+# Open Simulator app
+open -a Simulator
+
+# Install app (requires .app bundle, not .ipa)
+xcrun simctl install booted /path/to/App.app
+
+# Launch app
+xcrun simctl launch booted com.target.app
+
+# Terminate app
+xcrun simctl terminate booted com.target.app
+
+# Uninstall app
+xcrun simctl uninstall booted com.target.app
+
+# Take screenshot
+xcrun simctl io booted screenshot screenshot.png
+
+# Record video
+xcrun simctl io booted recordVideo recording.mp4
+```
+
+### Permission Management
+
+```bash
+# Grant all permissions
+xcrun simctl privacy booted grant all com.target.app
+
+# Grant specific permissions
+xcrun simctl privacy booted grant photos com.target.app
+xcrun simctl privacy booted grant camera com.target.app
+xcrun simctl privacy booted grant location com.target.app
+xcrun simctl privacy booted grant contacts com.target.app
+
+# Revoke permissions
+xcrun simctl privacy booted revoke all com.target.app
+
+# Reset permissions
+xcrun simctl privacy booted reset all com.target.app
+```
+
+### Push Notification Testing
+
+```bash
+# Send push notification (create payload.json first)
+xcrun simctl push booted com.target.app payload.json
+
+# Example payload.json:
+# {
+#   "aps": {
+#     "alert": {
+#       "title": "Test",
+#       "body": "Test notification"
+#     },
+#     "badge": 1
+#   }
+# }
+```
+
+### Deep Link Testing
+
+```bash
+# Open URL scheme
+xcrun simctl openurl booted "myapp://path/to/screen"
+
+# Open universal link
+xcrun simctl openurl booted "https://example.com/app-link"
+```
+
+### Network & Location
+
+```bash
+# Set location (latitude, longitude)
+xcrun simctl location booted set 37.7749,-122.4194
+
+# Clear location override
+xcrun simctl location booted clear
+
+# Trigger iCloud sync
+xcrun simctl spawn booted notifyutil -p com.apple.cloudd.sync
+```
+
+### Accessibility Auditing
+
+```bash
+# Run accessibility audit
+xcrun simctl ui booted accessibility audit
+
+# Appearance mode
+xcrun simctl ui booted appearance dark
+xcrun simctl ui booted appearance light
 ```
 
 ---
