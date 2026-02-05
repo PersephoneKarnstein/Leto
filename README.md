@@ -1,63 +1,72 @@
-# Hermes Bytecode Analysis Skill
+# Hermes Bytecode Analysis Skills
 
-**Comprehensive penetration testing toolkit** for React Native/Hermes Android applications. Covers static analysis, dynamic instrumentation, traffic interception, and exploit development.
+**Comprehensive penetration testing toolkit** for React Native applications compiled with Hermes. Available as two separate skills for Android and iOS.
 
-## Quick Start - Security Assessment
+## Installation
 
+Download from GitLab CI artifacts:
+- `hermes-android.zip` - Android APK analysis
+- `hermes-ios.zip` - iOS IPA analysis
+
+Both skills can be installed simultaneously (different names in frontmatter).
+
+## Quick Start
+
+### Android
 ```bash
-# 1. Check tool availability
-python scripts/check_tools.py --install-help
+# 1. Check tools
+python scripts/check_tools.py
 
-# 2. Extract and decompile APK
-apktool d app.apk -o extracted/
-jadx app.apk -d jadx_output/
+# 2. Analyze APK
+python scripts/analyze_apk.py target.apk --decompile
 
-# 3. CRITICAL: Check for exported components & secrets
-grep 'exported="true"' extracted/AndroidManifest.xml
-cat jadx_output/sources/*/BuildConfig.java
+# 3. Verify Hermes version
+file ./analysis/extracted/assets/index.android.bundle
 
-# 4. Analyze Hermes bundle
-python scripts/extract_bundle.py app.apk --output ./hermes/
-r2 -qc 'pd:hi' ./hermes/index.android.bundle    # Bundle info
-r2 -qc 'iz~http' ./hermes/index.android.bundle  # Find API endpoints
-
-# 5. Setup traffic interception
-./scripts/setup_burp_cert.sh /path/to/burp_cert.der
-adb shell settings put global http_proxy YOUR_IP:8080
+# 4. Run with Frida
+frida -U -f com.target.app -l scripts/frida/universal_ssl_bypass.js
 ```
 
-## Assessment Methodology
+### iOS
+```bash
+# 1. Extract IPA
+unzip -o app.ipa -d extracted_ipa/
 
-| Phase | Focus | Tools |
-|-------|-------|-------|
-| **1. APK Analysis** | Manifest, exports, secrets | apktool, jadx, grep |
-| **2. Hermes Analysis** | API endpoints, logic | r2hermes, hbc-decompiler |
-| **3. Traffic Capture** | Auth flows, API calls | Burp Suite, mitmproxy |
-| **4. Runtime Hooks** | Token capture, bypass | Frida |
-| **5. UI Automation** | Trigger flows | Maestro |
-| **6. PoC Development** | Prove exploitability | ADB, custom apps |
+# 2. Verify Hermes bundle
+file extracted_ipa/Payload/*.app/main.jsbundle
 
-## Features
+# 3. Analyze bundle
+r2 -qc 'pd:ha' main.jsbundle > decompiled.js
 
-- **Static Analysis**: Decompile, disassemble, extract strings/modules
-- **Dynamic Analysis**: Frida hooks for React Native/Hermes runtime
-- **Patching**: Modify bytecode and repackage APKs
-- **Multi-tool**: Integrates r2hermes, hbctool, hermes-dec, hermes_rs
+# 4. Run with Frida (jailbroken device)
+frida -U -f com.target.app -l scripts/frida/ios_ssl_bypass.js
+```
 
 ## Directory Structure
 
 ```
 hermes-skill/
-├── SKILL.md              # Main skill documentation
+├── SKILL-android.md      # Android skill documentation
+├── SKILL-ios.md          # iOS skill documentation
 ├── README.md             # This file
-└── scripts/
-    ├── check_tools.py    # Verify tool installation
-    ├── analyze_bundle.py # Quick bundle analysis
-    ├── extract_bundle.py # Extract from APK/device
-    ├── patch_and_repack.py # Patch and rebuild APK
-    └── frida/
-        ├── hermes_hooks.js   # React Native/Hermes hooks
-        └── ssl_bypass.js     # Certificate pinning bypass
+├── scripts/
+│   ├── check_tools.py    # Verify tool installation
+│   ├── analyze_apk.py    # Automated APK analysis
+│   ├── analyze_bundle.py # Hermes bundle analysis
+│   ├── extract_bundle.py # Extract from APK/device
+│   ├── patch_and_repack.py # Patch and rebuild APK
+│   ├── frida/
+│   │   ├── universal_ssl_bypass.js  # SSL pinning bypass (40+ methods)
+│   │   ├── root_bypass.js           # Root/emulator detection bypass
+│   │   ├── ios_ssl_bypass.js        # iOS SSL pinning bypass
+│   │   ├── ios_jailbreak_bypass.js  # iOS jailbreak detection bypass
+│   │   ├── gms_firebase_bypass.js   # GMS/Firebase bypass
+│   │   ├── hermes_hooks.js          # React Native bridge hooks
+│   │   └── detect_frameworks.js     # Framework detection
+│   └── maestro/
+│       └── *.yaml        # UI automation flows
+└── templates/
+    └── ANALYSIS_TEMPLATE.md
 ```
 
 ## Tool Requirements
@@ -65,55 +74,39 @@ hermes-skill/
 | Tool | Purpose | Install |
 |------|---------|---------|
 | radare2 + r2hermes | Primary analysis | `brew install radare2 && r2pm -ci r2hermes` |
-| Python 3.8+ | Scripts | System or custom path |
+| hermes-dec | Decompiler (binary: `hbc-decompiler`) | `pip install git+https://github.com/P1sec/hermes-dec` |
 | hbctool | Disasm/asm | `pip install hbctool` |
-| hermes-dec | Pure Python decompiler | `pip install git+https://github.com/P1sec/hermes-dec` |
-| hermes_rs | Rust tools | `cargo install --git https://github.com/Pilfer/hermes_rs` |
+| jadx | DEX decompilation | `brew install jadx` |
+| apktool | APK decoding | `brew install apktool` |
 | Frida | Runtime hooks | `pip install frida-tools` |
-| adb | Device interaction | Android SDK |
-| apktool | APK manipulation | `brew install apktool` |
+| objection | APK/IPA patching | `pip install objection` |
+| gitleaks | Secret scanning | `brew install gitleaks` |
+| Maestro | UI automation | `curl -fsSL "https://get.maestro.mobile.dev" \| bash` |
 
-## Workflows
+## Key Features
 
 ### Static Analysis
-```bash
-# Decompile all functions
-r2 -qc 'pd:ha' bundle.hbc > decompiled.js
+- APK/IPA extraction and Hermes bundle detection
+- Hermes version identification (`file` command most reliable)
+- String and API endpoint extraction
+- JADX decompilation for Java/Kotlin code
+- Secret scanning with gitleaks/trufflehog
 
-# Extract strings
-hermes_rs strings bundle.hbc
+### Dynamic Analysis
+- Frida scripts for SSL pinning bypass (40+ methods)
+- Root/jailbreak detection bypass
+- GMS/Firebase bypass for emulators
+- React Native bridge hooking
+- Maestro UI automation
 
-# Find API endpoints
-grep -E 'https?://' decompiled.js
-```
+### Platform-Specific
 
-### Runtime Analysis
-```bash
-# Start Frida server on device
-adb push frida-server /data/local/tmp/
-adb shell chmod +x /data/local/tmp/frida-server
-adb shell /data/local/tmp/frida-server &
-
-# Hook app
-frida -U -f com.example.app -l scripts/frida/hermes_hooks.js
-```
-
-### Patching
-```bash
-# Patch bundle and repackage
-python scripts/patch_and_repack.py original.apk patched.bundle -o patched.apk
-
-# Install
-adb install -r patched.apk
-```
-
-## Path Configuration
-
-Before running tools, confirm paths with user. Default assumptions:
-- `r2` / `radare2` in PATH
-- `python3` in PATH (or custom like `/opt/miniconda3/bin/python`)
-- `cargo` in PATH for Rust tools
-- `adb` in PATH (Android SDK)
+| Feature | Android | iOS |
+|---------|---------|-----|
+| Bundle location | `assets/index.android.bundle` | `main.jsbundle` |
+| Emulator | ARM64/x86_64 AVD | N/A (device only) |
+| Root/JB tools | Frida server | Palera1n, Dopamine |
+| Patching | Objection, apktool | Objection + codesign |
 
 ## License
 
