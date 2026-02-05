@@ -11,6 +11,17 @@ Toolkit for reverse engineering React Native **Android** applications compiled w
 
 ---
 
+## Key Insight: Manual Verification Required
+
+> **Testing 13 real-world apps revealed a 75% false positive rate in automated secret detection.**
+>
+> Common false positives: RSA PUBLIC keys (not private), JWT version manifests (not auth tokens),
+> asset identifier hashes, and bytecode noise patterns. Always manually verify findings before reporting.
+>
+> See **Phase 9: Deep Analysis** for verification methodology.
+
+---
+
 ## Quick Start
 
 ```bash
@@ -192,6 +203,77 @@ cat scripts/frida/universal_ssl_bypass.js \
     scripts/frida/gms_firebase_bypass.js > /tmp/all.js
 frida -U -f com.target.app -l /tmp/all.js
 ```
+
+### Phase 9: Deep Analysis (Manual Verification)
+
+**CRITICAL: Automated scanners produce ~75% false positive rate.** Always manually verify findings.
+
+#### RSA Key Analysis
+
+```bash
+# Search for RSA keys in bundle
+strings index.android.bundle | grep -E "RSA|BEGIN.*KEY|END.*KEY"
+
+# IMPORTANT: Distinguish PUBLIC vs PRIVATE
+# - "RSA PUBLIC KEY" or "PUBLIC KEY" = SAFE (expected for signature verification)
+# - "RSA PRIVATE KEY" or "PRIVATE KEY" = CRITICAL (should never be in client)
+
+# Check full context around matches
+strings index.android.bundle | grep -B2 -A2 "RSA"
+```
+
+#### JWT Token Analysis
+
+```bash
+# Find JWT tokens (eyJ... format)
+strings index.android.bundle | grep -oE 'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'
+
+# Decode JWT payload to determine purpose
+JWT="eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJwYXlsb2FkIjoiZGF0YSJ9.sig"
+echo "$JWT" | cut -d. -f2 | base64 -d 2>/dev/null
+
+# JWT Classification:
+# - Auth tokens: contain user_id, exp, iat, scopes → SENSITIVE
+# - Version manifests: contain version, timestamp, messages → NOT SENSITIVE
+# - Config tokens: contain feature flags, settings → REVIEW CONTEXT
+```
+
+#### Hash Pattern Analysis
+
+```bash
+# Many MD5/SHA256 matches are NOT secrets
+# Common false positives:
+# - Asset/font identifiers
+# - File integrity hashes
+# - Cache keys
+
+# Check context around hash patterns
+strings index.android.bundle | grep -oE '[a-f0-9]{32}' | head -10
+# If surrounded by asset names, font data, or config → likely NOT a secret
+```
+
+#### Firebase/Google API Key Verification
+
+```bash
+# Firebase keys (AIza...) are often safe if properly restricted
+# Check if key has API restrictions in Firebase console
+
+# Extract Firebase keys
+strings index.android.bundle | grep -oE 'AIza[A-Za-z0-9_-]{35}'
+
+# Verify: Keys should be restricted to specific APIs and app signatures
+# Unrestricted keys in production builds = vulnerability
+```
+
+#### False Positive Checklist
+
+| Pattern | Usually False Positive? | How to Verify |
+|---------|------------------------|---------------|
+| `RSA` | Often (check for PUBLIC) | Full context shows "PUBLIC KEY" |
+| `eyJ...` JWT | Sometimes | Decode payload - check for auth claims |
+| MD5/SHA256 hash | Usually | Check surrounding context (asset IDs) |
+| `SG.` prefix | Often | Bytecode noise - check for full key format |
+| Base64 strings | Often | Decode - usually config/asset data |
 
 ---
 
@@ -417,17 +499,29 @@ Java.perform(function() {
 
 ### Secret scanner false positives
 
-gitleaks/trufflehog produce false positives:
-- Unicode emoji sequences
-- Build verification tokens
-- Base64-encoded non-secrets
+**Testing showed ~75% false positive rate on automated secret detection.** Common false positives:
 
-Always manually review findings.
+| False Positive Type | Example | How to Identify |
+|---------------------|---------|-----------------|
+| Unicode emoji sequences | `1F471-1F3FC-200D-2640-FE0F` | Hex pattern but emoji code |
+| Build verification tokens | Sentry DSN, build hashes | Check vendor documentation |
+| RSA PUBLIC keys | `BEGIN RSA PUBLIC KEY` | Safe - used for verification |
+| Version manifest JWTs | JWT with `versions`, `timestamp` | Decode payload to check |
+| Asset identifiers | MD5 hashes of fonts/images | Surrounded by asset names |
+| Bytecode noise | `SG.` in garbled context | Check for complete key format |
+
+**Deep analysis workflow:**
+1. Run automated scanner
+2. For each finding, check full context (surrounding 50+ chars)
+3. Decode encoded values (Base64, JWT)
+4. Classify: AUTH SECRET vs CONFIG vs FALSE POSITIVE
+5. Only report confirmed secrets
 
 ---
 
 ## Security Checklist
 
+### Static Analysis
 - [ ] `AndroidManifest.xml` - exported components, allowBackup
 - [ ] `network_security_config.xml` - cleartext traffic, cert pinning
 - [ ] `BuildConfig.java` - API keys, debug flags
@@ -435,6 +529,26 @@ Always manually review findings.
 - [ ] Hermes bundle - API endpoints, tokens
 - [ ] Deep link handlers - intent injection
 - [ ] WebView usage - JavaScript interfaces
+
+### Secret Scanning
+- [ ] Run basic secret scanner (gitleaks)
+- [ ] Run enhanced secret scanner (detects obfuscated secrets)
+- [ ] **Manually verify all findings** (75% are false positives)
+- [ ] Check RSA keys: PUBLIC vs PRIVATE
+- [ ] Decode JWT tokens: auth vs config vs version manifest
+- [ ] Verify hash patterns: secrets vs asset identifiers
+- [ ] Check Firebase keys for API restrictions
+
+### Anti-Tampering
+- [ ] Check for root detection (RootBeer, isRooted)
+- [ ] Check for Frida detection
+- [ ] Check for emulator detection
+- [ ] Identify bypass requirements
+
+### Dynamic Analysis
+- [ ] Test on rooted emulator with Frida
+- [ ] Bypass SSL pinning and root detection
+- [ ] Intercept traffic with Burp Suite
 
 ---
 

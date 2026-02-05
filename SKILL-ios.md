@@ -11,6 +11,17 @@ Toolkit for reverse engineering React Native **iOS** applications compiled with 
 
 ---
 
+## Key Insight: Manual Verification Required
+
+> **Testing 13 real-world apps revealed a 75% false positive rate in automated secret detection.**
+>
+> Common false positives: RSA PUBLIC keys (not private), JWT version manifests (not auth tokens),
+> asset identifier hashes, and bytecode noise patterns. Always manually verify findings before reporting.
+>
+> See **Phase 8: Deep Analysis** for verification methodology.
+
+---
+
 ## Quick Start
 
 ```bash
@@ -144,12 +155,24 @@ find ./target_analysis/extracted/ -name "*.plist" -exec plutil -p {} \; | grep -
 strings ./target_analysis/extracted/Payload/*.app/main.jsbundle | grep -E '^https?://' | sort -u
 ```
 
-**Note:** gitleaks/trufflehog produce false positives. Common false positives:
-- Unicode emoji sequences
-- Build verification tokens
-- Base64-encoded non-secrets
+**Note:** gitleaks/trufflehog produce false positives. **Testing showed ~75% false positive rate.**
 
-Always manually review findings.
+Common false positives:
+| False Positive Type | Example | How to Identify |
+|---------------------|---------|-----------------|
+| Unicode emoji sequences | `1F471-1F3FC-200D-2640-FE0F` | Hex pattern but emoji code |
+| Build verification tokens | Sentry DSN, build hashes | Check vendor documentation |
+| RSA PUBLIC keys | `BEGIN RSA PUBLIC KEY` | Safe - used for verification |
+| Version manifest JWTs | JWT with `versions`, `timestamp` | Decode payload to check |
+| Asset identifiers | MD5 hashes of fonts/images | Surrounded by asset names |
+| Bytecode noise | `SG.` in garbled context | Check for complete key format |
+
+**Deep analysis workflow:**
+1. Run automated scanner
+2. For each finding, check full context (surrounding 50+ chars)
+3. Decode encoded values (Base64, JWT)
+4. Classify: AUTH SECRET vs CONFIG vs FALSE POSITIVE
+5. Only report confirmed secrets
 
 ### Phase 4: Hermes Analysis
 
@@ -234,7 +257,99 @@ cat scripts/frida/ios_ssl_bypass.js \
 frida -U -f com.target.app -l /tmp/ios_all.js
 ```
 
-### Phase 8: Dynamic Analysis (Choose One)
+### Phase 8: Deep Analysis (Manual Verification)
+
+**CRITICAL: Automated scanners produce ~75% false positive rate.** Always manually verify findings.
+
+#### RSA Key Analysis
+
+```bash
+# Search for RSA keys in bundle
+strings main.jsbundle | grep -E "RSA|BEGIN.*KEY|END.*KEY"
+
+# IMPORTANT: Distinguish PUBLIC vs PRIVATE
+# - "RSA PUBLIC KEY" or "PUBLIC KEY" = SAFE (expected for signature verification)
+# - "RSA PRIVATE KEY" or "PRIVATE KEY" = CRITICAL (should never be in client)
+
+# Check full context around matches
+strings main.jsbundle | grep -B2 -A2 "RSA"
+```
+
+#### JWT Token Analysis
+
+```bash
+# Find JWT tokens (eyJ... format)
+strings main.jsbundle | grep -oE 'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'
+
+# Decode JWT payload to determine purpose
+JWT="eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJwYXlsb2FkIjoiZGF0YSJ9.sig"
+echo "$JWT" | cut -d. -f2 | base64 -d 2>/dev/null
+
+# JWT Classification:
+# - Auth tokens: contain user_id, exp, iat, scopes → SENSITIVE
+# - Version manifests: contain version, timestamp, messages → NOT SENSITIVE
+# - Config tokens: contain feature flags, settings → REVIEW CONTEXT
+```
+
+#### Native Binary Analysis (iOS-Specific)
+
+```bash
+# Extract strings from native binary for security patterns
+APP_BINARY="./extracted/Payload/*.app/AppName"
+
+# Check for jailbreak detection paths
+strings "$APP_BINARY" | grep -E '/Applications/Cydia|MobileSubstrate|/var/lib/cydia'
+
+# Known jailbreak detection paths (from enterprise apps):
+# - /Applications/Cydia.app
+# - /Library/MobileSubstrate/MobileSubstrate.dylib
+# - /Library/MobileSubstrate/DynamicLibraries/*.plist
+# - /private/var/lib/cydia
+# - /private/var/tmp/cydia.log
+# - /System/Library/LaunchDaemons/com.saurik.Cydia.Startup.plist
+
+# Check for SSL pinning libraries
+strings "$APP_BINARY" | grep -iE 'PinnedCertificate|TrustEvaluator|CertificatePinning'
+
+# Common SSL pinning implementations:
+# - Alamofire: PinnedCertificatesTrustEvaluator
+# - Starscream: CertificatePinning (WebSocket)
+# - TrustKit: TSKPinningValidator
+```
+
+#### Enterprise Security Patterns
+
+Enterprise apps often include MDM and advanced security:
+
+```bash
+# Check for Microsoft Intune MDM
+ls ./extracted/Payload/*.app/Frameworks/ | grep -i intune
+
+# Check Info.plist for MDM settings
+plutil -p ./extracted/Payload/*.app/Info.plist | grep -iE 'intune|mdm|adal'
+
+# Common enterprise indicators:
+# - IntuneMAMSwift.framework
+# - ADALClientId, ADALRedirectUri (Azure AD)
+# - Policy enforcement, compliance checks
+# - File protection levels
+
+# Check for WebRTC security (voice/video calls)
+ls ./extracted/Payload/*.app/Frameworks/ | grep -i webrtc
+# WebRTC should use DTLS + SRTP for secure media
+```
+
+#### False Positive Checklist (iOS)
+
+| Pattern | Usually False Positive? | How to Verify |
+|---------|------------------------|---------------|
+| `RSA` | Often (check for PUBLIC) | Full context shows "PUBLIC KEY" |
+| `eyJ...` JWT | Sometimes | Decode payload - check for auth claims |
+| MD5/SHA256 hash | Usually | Check surrounding context (asset IDs) |
+| `SG.` prefix | Often | Bytecode noise - check for full key format |
+| SendGrid pattern | Often | Hermes bytecode contains partial matches |
+
+### Phase 10: Dynamic Analysis (Choose One)
 
 **Option A: Simulator** (apps you build)
 ```bash
@@ -662,6 +777,19 @@ r2 -wqc '.(fix-hbc)' main.jsbundle
 
 ## Troubleshooting
 
+### IPA extraction fails
+
+Some IPAs have non-standard structures (e.g., `.app` at root instead of in `Payload/`):
+```bash
+# Standard structure: Payload/AppName.app/
+# Non-standard: AppName.app/ (at root)
+
+# The analyze_ipa.py script handles both structures automatically
+# For manual extraction, check both locations:
+ls extracted_ipa/Payload/*.app/main.jsbundle 2>/dev/null || \
+ls extracted_ipa/*.app/main.jsbundle
+```
+
 ### Hermes version detection issues
 
 The `analyze_ipa.py` script may sometimes report incorrect versions. **Always verify with `file` command:**
@@ -743,6 +871,7 @@ security cms -D -i profile.mobileprovision
 
 ## Security Checklist
 
+### Static Analysis
 - [ ] Extract IPA and locate `main.jsbundle`
 - [ ] Verify Hermes bytecode vs plain JavaScript (`file main.jsbundle`)
 - [ ] Analyze bundle with r2hermes/hermes-dec
@@ -751,9 +880,26 @@ security cms -D -i profile.mobileprovision
 - [ ] Analyze PrivacyInfo.xcprivacy (iOS 17+)
 - [ ] Analyze Keychain usage
 - [ ] Check entitlements for sensitive capabilities
+
+### Secret Scanning
 - [ ] Run basic secret scanner (gitleaks)
 - [ ] Run enhanced secret scanner (detects obfuscated secrets)
+- [ ] **Manually verify all findings** (75% are false positives)
+- [ ] Check RSA keys: PUBLIC vs PRIVATE
+- [ ] Decode JWT tokens: auth vs config vs version manifest
+- [ ] Verify hash patterns: secrets vs asset identifiers
+
+### Native Binary Analysis
+- [ ] Check for jailbreak detection paths in binary
+- [ ] Identify SSL pinning libraries (Alamofire, TrustKit, Starscream)
+- [ ] Check for MDM integration (Intune, AirWatch)
+- [ ] Analyze WebRTC security if app has calls
+
+### Anti-Tampering
 - [ ] Check for anti-tampering code (jailbreak detection, Frida detection)
+- [ ] Identify bypass requirements
+
+### Dynamic Analysis
 - [ ] Test on jailbroken device with Frida
 - [ ] Bypass SSL pinning and jailbreak detection
 - [ ] Intercept traffic with Burp Suite

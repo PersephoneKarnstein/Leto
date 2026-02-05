@@ -47,11 +47,11 @@ This document tracks progress testing the toolkit against real-world React Nativ
 | Mattermost Android | ✅ v96 | 21MB | 75 | 0 | 3 (isRooted) |
 | Standard Notes | ✅ v96 | 2.2MB | 17 | 0 | 3 (checkIntegrity) |
 | Fintunes | ✅ v96 | 4.3MB | 40 | 0 | 0 |
-| Joplin | ✅ v96 | 28MB | 100 | **RSA PRIVATE KEY** | 0 |
-| Rocket.Chat | ✅ v96 | 11MB | 98 | **JWT token** | 4 (isRooted) |
+| Joplin | ✅ v96 | 28MB | 100 | ~~RSA PRIVATE KEY~~ (PUBLIC) | 0 |
+| Rocket.Chat | ✅ v96 | 11MB | 98 | ~~JWT token~~ (version manifest) | 4 (isRooted) |
 | Streamyfin | ✅ v96 | 6.3MB | 44 | 0 | 2 (isRooted) |
-| Expensify | ✅ v96 | 26MB | 100 | **Firebase key, PRIVATE KEY** | 1 |
-| Mattermost iOS | ✅ v96 | 27MB | 26 | SendGrid prefix | 3 (isRooted, xposed) |
+| Expensify | ✅ v96 | 26MB | 100 | ⚠️ **Firebase key, RSA PRIVATE KEY** | 1 |
+| Mattermost iOS | ✅ v96 | 27MB | 26 | ~~SendGrid prefix~~ (bytecode noise) | 3 (jailbreak, xposed) |
 
 ---
 
@@ -226,48 +226,53 @@ This document tracks progress testing the toolkit against real-world React Nativ
 ### Joplin (3.5.9) - 121MB
 
 **Tested:** 2026-02-05
-**Status:** ⚠️ Pass with Findings
+**Status:** ✅ Pass (FALSE POSITIVE corrected)
 
 #### Static Analysis
 - [x] analyze_apk.py completed without errors
 - [x] Hermes version correctly detected: v96 (RN 0.73+)
 - [x] Bundle size: 28MB (large)
 - [x] Endpoints found: 100
-- [x] Secrets found: **RSA PRIVATE KEY header**
+- [x] Secrets found: **NONE** (false positive corrected)
 - [x] Enhanced scan: 66 findings
 
-#### Key Findings
-- **RSA PRIVATE KEY header detected** - likely test/example key
+#### Deep Analysis Findings
+- **FALSE POSITIVE CORRECTED**: Scanner detected "RSA" pattern but full context shows "RSA PUBLIC KEY" (not private)
+- Contains RSA public keys for signature verification (safe to embed)
 - Large bundle handled correctly
-- Popular note-taking app
+- Popular note-taking app with good security practices
 
-#### Potential Security Issue
-- Private key header in bundle needs investigation
-- May be sample/test key for documentation
+#### Security Assessment
+- ✅ No actual secrets exposed
+- ✅ Only public keys in bundle (expected for crypto operations)
 
 ---
 
 ### Rocket.Chat (4.69.0) - 141MB
 
 **Tested:** 2026-02-05
-**Status:** ⚠️ Pass with Findings
+**Status:** ✅ Pass (JWT analyzed - not sensitive)
 
 #### Static Analysis
 - [x] analyze_apk.py completed without errors
 - [x] Hermes version correctly detected: v96 (RN 0.73+)
 - [x] Bundle size: 11MB
 - [x] Endpoints found: 98
-- [x] Secrets found: **JWT token**
+- [x] Secrets found: **NONE** (JWT is version manifest, not auth token)
 - [x] Enhanced scan: 50 findings
 - [x] Anti-tampering: 4 indicators (isRooted)
 
-#### Key Findings
-- **JWT token detected** in bundle (eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...)
-- Root detection implemented
-- Enterprise chat platform
+#### Deep Analysis Findings
+- **JWT ANALYZED**: The embedded JWT is a **version compatibility manifest** signed by Rocket.Chat
+- JWT payload contains: `timestamp`, `messages`, `versions` (list of supported server versions with expiration dates)
+- This is a **client-side version checking mechanism**, NOT an authentication token
+- Root detection implemented with 4 indicators
+- Enterprise chat platform with good security
 
-#### Potential Security Issue
-- JWT token in bundle - may be example/placeholder
+#### Security Assessment
+- ✅ No auth secrets exposed
+- ✅ JWT serves legitimate purpose (version compatibility checking)
+- ✅ Strong anti-tampering with root detection
 
 ---
 
@@ -295,52 +300,164 @@ This document tracks progress testing the toolkit against real-world React Nativ
 ### Expensify (staging) - 230MB
 
 **Tested:** 2026-02-05
-**Status:** ⚠️ Pass with Findings
+**Status:** ⚠️ CONFIRMED SECRETS (staging build)
 
 #### Static Analysis
 - [x] analyze_apk.py completed without errors
 - [x] Hermes version correctly detected: v96 (RN 0.73+)
 - [x] Bundle size: 26MB (large)
 - [x] Endpoints found: 100
-- [x] Secrets found: **Firebase key, PRIVATE KEY header, SendGrid reference**
+- [x] Secrets found: **Firebase key (CONFIRMED), RSA PRIVATE KEY (CONFIRMED)**
 - [x] Enhanced scan: 118 findings (highest)
 
-#### Key Findings
-- **Firebase API key detected**: AIzaSyBrLKgCuo6Vem6Xi5RPokdumssW8HaWBow
-- **PRIVATE KEY header** in bundle
-- **SendGrid key reference**
-- Staging build may have more exposed than production
+#### Deep Analysis Findings
+- **CONFIRMED Firebase API key**: `AIzaSyBrLKgCuo6Vem6Xi5RPokdumssW8HaWBow`
+  - This is a real Firebase key for the staging environment
+  - Used for Firebase Cloud Messaging (FCM) and likely other Firebase services
+  - Should be restricted by API key restrictions in Firebase console
+- **CONFIRMED RSA PRIVATE KEY**: Full PEM-encoded private key found in bundle
+  - 2048-bit RSA private key with complete structure
+  - Located in bundle at multiple positions
+  - Purpose unclear but represents significant exposure
+- **SendGrid reference** found but not a complete key
 
-#### Potential Security Issues
-- Firebase key should be verified if restricted
-- Private key header needs investigation
-- This is a staging build - production may differ
+#### Security Assessment
+- ⚠️ **HIGH RISK**: Real Firebase API key exposed
+- ⚠️ **HIGH RISK**: Complete RSA private key embedded
+- This is a **staging build** - production builds should be verified separately
+- Recommend: Report to Expensify security team
+
+#### Recommendations
+1. Firebase key should have API restrictions configured
+2. RSA private key should be removed from client bundle
+3. Production build should be analyzed for comparison
 
 ---
 
 ### Mattermost iOS (2.36.4) - 40MB
 
 **Tested:** 2026-02-05
-**Status:** ⚠️ Partial (IPA structure issue)
+**Status:** ✅ Pass (comprehensive deep analysis completed)
 
 #### Static Analysis
-- [ ] analyze_ipa.py failed - unusual IPA structure
-- [x] Manual extraction successful
+- [x] analyze_ipa.py completed (after fix for non-standard IPA structure)
 - [x] Hermes version: v96 (RN 0.73+)
 - [x] Bundle size: 27MB
 - [x] Endpoints found: 26
-- [x] Secrets found: SendGrid prefix ('SG.')
-- [x] Enhanced scan: 50 findings (20 hashes)
+- [x] Secrets found: **NONE** (SG. was false positive in bytecode noise)
+- [x] Enhanced scan: 50 findings (20 hashes - asset identifiers)
 - [x] Anti-tampering: 3 indicators (isRooted, verifySignature, xposed)
 
-#### Key Findings
-- IPA has non-standard structure (Mattermost.app/ at root instead of Payload/)
-- Many MD5/SHA256 hashes in bundle
-- Root and Xposed detection
+#### Deep Analysis Findings
 
-#### Issues Encountered
-- **analyze_ipa.py bug**: Doesn't handle IPAs without Payload/ directory
-- Workaround: Manual extraction works
+**Jailbreak Detection (Native Binary)**:
+- Explicit path checks implemented:
+  - `/Applications/Cydia.app`
+  - `/Library/MobileSubstrate/DynamicLibraries/LiveClock.plist`
+  - `/Library/MobileSubstrate/DynamicLibraries/Veency.plist`
+  - `/Library/MobileSubstrate/MobileSubstrate.dylib`
+  - `/private/var/lib/cydia`
+  - `/private/var/tmp/cydia.log`
+  - `/System/Library/LaunchDaemons/com.saurik.Cydia.Startup.plist`
+
+**SSL Pinning**:
+- Alamofire `PinnedCertificatesTrustEvaluator`
+- Starscream `CertificatePinning` (WebSocket)
+- Certificate chain validation enabled
+
+**Microsoft Intune MDM Integration**:
+- Full IntuneMAMSwift.framework integration
+- Azure AD authentication (MSAL)
+- Policy enforcement: encryption, wipe, compliance checks
+- File protection level: `NSFileProtectionCompleteUntilFirstUserAuthentication`
+
+**WebRTC Security** (Calls):
+- DTLS for secure key exchange
+- SRTP encryption for media
+- AES-128-SHA1 and GCM cipher suites
+- Encrypted RTP header extensions
+
+**App Transport Security**:
+- `NSAllowsArbitraryLoads = true` (allows HTTP)
+- Only localhost has explicit HTTP exception
+- No insecure HTTP API endpoints found in codebase
+
+**Share Extension**:
+- Separate Sentry DSN (empty/disabled)
+- Supports up to 10 attachments
+- Uses App Groups for secure data sharing
+
+**MD5/SHA256 Hashes**:
+- Confirmed as **asset/font identifiers**, not secrets
+- Used for internal caching and integrity
+
+#### Security Assessment
+- ✅ Enterprise-grade security posture
+- ✅ Comprehensive jailbreak detection
+- ✅ SSL pinning on network layer
+- ✅ MDM policy enforcement
+- ✅ No hardcoded secrets
+- ✅ Secure WebRTC implementation for calls
+
+#### Issues Encountered (Now Fixed)
+- **analyze_ipa.py bug fixed**: Now handles IPAs without Payload/ directory
+
+---
+
+## Deep Analysis Results
+
+The following apps received comprehensive manual deep analysis beyond automated scanning:
+
+### 1. Expensify (staging) - ⚠️ CONFIRMED SECRETS
+
+**Firebase API Key**: `AIzaSyBrLKgCuo6Vem6Xi5RPokdumssW8HaWBow`
+- Real Firebase key for staging environment
+- Used for FCM and Firebase services
+- Should have API restrictions configured
+
+**RSA Private Key**: Complete 2048-bit PEM-encoded private key
+- Full private key structure in bundle
+- Significant security exposure
+- Purpose unclear, but should not be in client
+
+**Recommendation**: Consider responsible disclosure to Expensify security team.
+
+---
+
+### 2. Joplin - ✅ FALSE POSITIVE
+
+**Initial Finding**: "RSA PRIVATE KEY" pattern detected
+**Actual Finding**: RSA **PUBLIC** keys only
+- Scanner matched "RSA" but full context shows public keys
+- Used for signature verification (expected)
+- No private key material exposed
+
+---
+
+### 3. Rocket.Chat - ✅ NOT SENSITIVE
+
+**Initial Finding**: JWT token detected
+**Actual Finding**: Version compatibility manifest
+- JWT signed by Rocket.Chat contains version info
+- Payload: `timestamp`, `messages`, `versions` with expiration dates
+- Used for client-side version checking
+- NOT an authentication token
+
+---
+
+### 4. Mattermost iOS - ✅ ENTERPRISE SECURITY
+
+**Initial Finding**: SendGrid prefix, multiple hashes
+**Actual Finding**: All false positives
+
+**Security Features Discovered**:
+- **Jailbreak Detection**: 7 explicit path checks for Cydia, MobileSubstrate, etc.
+- **SSL Pinning**: Alamofire + Starscream certificate pinning
+- **MDM Integration**: Full Microsoft Intune with policy enforcement
+- **WebRTC Security**: DTLS + SRTP with AES-GCM
+- **Share Extension**: Isolated with App Groups
+
+**Hashes**: Asset identifiers for fonts/icons, not secrets.
 
 ---
 
@@ -350,26 +467,29 @@ This document tracks progress testing the toolkit against real-world React Nativ
 
 | Date | App | Issue | Severity | Status |
 |------|-----|-------|----------|--------|
-| 2026-02-05 | Mattermost iOS | IPA without Payload/ dir not handled | Medium | Open |
+| 2026-02-05 | Mattermost iOS | IPA without Payload/ dir not handled | Medium | ✅ Fixed |
 | 2026-02-05 | EteSync, Podverse | Apps with Hermes libs but plain JS bundles | Low | Known |
-| 2026-02-05 | Joplin | RSA PRIVATE KEY in bundle | Medium | Investigate |
-| 2026-02-05 | Rocket.Chat | JWT token in bundle | Medium | Investigate |
-| 2026-02-05 | Expensify | Firebase key, Private key in staging | High | Report? |
+| 2026-02-05 | Joplin | RSA PRIVATE KEY in bundle | Medium | ✅ False Positive (PUBLIC key) |
+| 2026-02-05 | Rocket.Chat | JWT token in bundle | Medium | ✅ Analyzed (version manifest) |
+| 2026-02-05 | Expensify | Firebase key, Private key in staging | High | ⚠️ CONFIRMED - Consider report |
 
 ### Improvements to Implement
 
 | Date | Description | Priority | Status |
 |------|-------------|----------|--------|
-| 2026-02-05 | Handle IPAs without Payload/ directory | High | Open |
+| 2026-02-05 | Handle IPAs without Payload/ directory | High | ✅ Implemented |
 | 2026-02-05 | Distinguish "has Hermes libs" vs "uses Hermes bytecode" | Medium | Open |
 | 2026-02-05 | Add severity levels to secret findings | Medium | Open |
 | 2026-02-05 | Auto-classify test/example keys vs real secrets | Low | Open |
+| 2026-02-05 | Improve RSA key detection (distinguish PUBLIC vs PRIVATE) | Medium | Open |
+| 2026-02-05 | Add JWT payload analysis for context | Low | Open |
 
 ### Script Changes Made
 
 | Date | Script | Change | Reason |
 |------|--------|--------|--------|
 | 2026-02-05 | analyze_ipa.py | Added --enhanced flag | Parity with Android |
+| 2026-02-05 | analyze_ipa.py | Fixed IPA extraction for non-standard structures | Mattermost iOS edge case |
 | 2026-02-05 | SKILL-ios.md | Added obfuscation/anti-tamper sections | Learnings from test app |
 
 ---
@@ -384,11 +504,12 @@ This document tracks progress testing the toolkit against real-world React Nativ
 | **Apps tested** | **13** |
 | Apps with Hermes bytecode | 10 (77%) |
 | Apps with plain JS (has libs) | 2 |
-| Apps passing cleanly | 9 |
-| Apps with potential secrets | 4 |
+| Apps passing cleanly | 11 |
+| Apps with CONFIRMED secrets | 1 (Expensify staging) |
+| False positives identified | 3 (Joplin, Rocket.Chat, Mattermost iOS) |
 | Apps with anti-tampering | 9 |
-| Improvements identified | 4 |
-| Improvements implemented | 0 |
+| Improvements identified | 6 |
+| Improvements implemented | 1 |
 
 ---
 
@@ -398,8 +519,29 @@ This document tracks progress testing the toolkit against real-world React Nativ
 2. **Plain JS surprise**: 2 apps (EteSync, Podverse) have Hermes libraries but plain JS bundles
 3. **Anti-tampering common**: 9/13 apps implement some form of root/jailbreak detection
 4. **Large bundles work**: 28MB Joplin and 26MB Expensify analyzed successfully
-5. **Secrets found**: 4 apps have potential secrets requiring investigation
-6. **iOS IPA edge case**: Non-standard IPA structure breaks analyzer
+5. **False positive rate**: 3/4 initial "secrets" were false positives after deep analysis
+6. **iOS IPA edge case**: Non-standard IPA structure - now fixed in analyzer
+7. **Enterprise security**: Mattermost iOS has enterprise-grade MDM, SSL pinning, and jailbreak detection
+
+## Deep Analysis Learnings
+
+### False Positive Patterns
+- **RSA keys**: Always verify PUBLIC vs PRIVATE - "RSA" pattern alone is insufficient
+- **JWT tokens**: Decode payload to determine purpose (auth vs version manifest vs config)
+- **Hash-like strings**: MD5/SHA256 patterns often asset identifiers, not secrets
+- **Bytecode noise**: Hermes string table can contain partial matches (e.g., "SG.")
+
+### Real Secret Indicators
+- Firebase keys (`AIza...`) - likely real but check API restrictions
+- Complete PEM-encoded private keys with full structure
+- API keys with recognizable vendor prefixes AND valid format
+
+### Enterprise App Security Patterns (Mattermost iOS)
+- Multiple layers of jailbreak detection (path checks, library checks)
+- SSL pinning via Alamofire/Starscream
+- MDM integration (Microsoft Intune)
+- WebRTC with DTLS/SRTP for secure calls
+- App Groups for secure extension communication
 
 ## Notes
 
@@ -408,3 +550,4 @@ This document tracks progress testing the toolkit against real-world React Nativ
 - Large bundles (>20MB) work fine with current implementation
 - Some apps may require GMS bypass for dynamic analysis
 - Staging builds (Expensify) may expose more than production
+- **Deep analysis is essential** - 75% of initial "secrets" were false positives

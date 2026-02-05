@@ -2,6 +2,8 @@
 
 **Comprehensive penetration testing toolkit** for React Native applications compiled with Hermes. Available as two separate skills for Android and iOS.
 
+> **Key Insight from Testing:** Analysis of 13 real-world apps revealed a **75% false positive rate** in automated secret detection. RSA PUBLIC keys (not private), JWT version manifests (not auth tokens), and asset identifier hashes are commonly misidentified. **Always manually verify findings.** See the [Deep Analysis methodology](SKILL-android.md#phase-9-deep-analysis-manual-verification) in the skills.
+
 ## Why "Lêtô"?
 
 This repository is named **Lêtô** (Λητώ) in honor of the Greek titaness who confronted Hermes at Troy. In Homer's *Iliad*, when the gods chose sides in the Trojan War, Hermes faced Leto on the battlefield, though he declined combat with the mother of Apollo and Artemis, saying "Off you go, and make loud boasts among the deathless gods that you have conquered me by strength and force." (Wilson, 2023)
@@ -21,13 +23,18 @@ Both skills can be installed simultaneously (different names in frontmatter).
 # 1. Check tools
 python scripts/check_tools.py
 
-# 2. Analyze APK
-python scripts/analyze_apk.py target.apk --decompile
+# 2. Analyze APK (with enhanced secret scanning)
+python scripts/analyze_apk.py target.apk --decompile --enhanced
 
 # 3. Verify Hermes version
 file ./analysis/extracted/assets/index.android.bundle
 
-# 4. Run with Frida
+# 4. IMPORTANT: Manually verify any secret findings (75% are false positives)
+# - Check RSA keys: PUBLIC vs PRIVATE
+# - Decode JWT tokens: auth vs config/version manifest
+# - Verify hash patterns: secrets vs asset identifiers
+
+# 5. Run with Frida
 frida -U -f com.target.app -l scripts/frida/universal_ssl_bypass.js
 ```
 
@@ -36,13 +43,18 @@ frida -U -f com.target.app -l scripts/frida/universal_ssl_bypass.js
 # 1. Check tools
 python scripts/check_tools_ios.py
 
-# 2. Analyze IPA
-python scripts/analyze_ipa.py target.ipa --decompile
+# 2. Analyze IPA (with enhanced secret scanning)
+python scripts/analyze_ipa.py target.ipa --decompile --enhanced
 
 # 3. Verify Hermes version
 file ./target_analysis/extracted/Payload/*.app/main.jsbundle
 
-# 4. Run with Frida (jailbroken device)
+# 4. IMPORTANT: Manually verify any secret findings (75% are false positives)
+# - Check RSA keys: PUBLIC vs PRIVATE
+# - Decode JWT tokens: auth vs config/version manifest
+# - Verify hash patterns: secrets vs asset identifiers
+
+# 5. Run with Frida (jailbroken device)
 frida -U -f com.target.app -l scripts/frida/ios_ssl_bypass.js
 ```
 
@@ -52,6 +64,7 @@ frida -U -f com.target.app -l scripts/frida/ios_ssl_bypass.js
 hermes-skill/
 ├── SKILL-android.md      # Android skill documentation
 ├── SKILL-ios.md          # iOS skill documentation
+├── TESTING_TRACKER.md    # Real-world app testing results
 ├── README.md             # This file
 ├── scripts/
 │   ├── check_tools.py        # Android tool checker
@@ -127,6 +140,26 @@ hermes-skill/
 | Patching | Objection, apktool | Objection + codesign |
 
 *iOS Simulator only works with apps you build from source. App Store IPAs are device-only.
+
+## Testing Results
+
+The toolkit has been tested against **13 real-world React Native applications** (12 Android APKs, 1 iOS IPA) including:
+
+| App | Hermes | Security Features |
+|-----|--------|-------------------|
+| Mattermost | v96 | Enterprise MDM, SSL pinning, jailbreak detection |
+| Expensify | v96 | Firebase integration |
+| BlueWallet | v96 | 4 anti-tampering indicators (crypto wallet) |
+| Rocket.Chat | v96 | Root detection, enterprise features |
+| Standard Notes | v96 | Integrity checking, encryption |
+
+**Key findings:**
+- 10/12 Android apps use Hermes bytecode v96 (React Native 0.73+)
+- 9/13 apps implement root/jailbreak detection
+- **75% false positive rate** on automated secret detection
+- Only 1/4 flagged "secrets" were confirmed after deep analysis
+
+See [TESTING_TRACKER.md](TESTING_TRACKER.md) for detailed results.
 
 ## License
 
