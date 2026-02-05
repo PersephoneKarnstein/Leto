@@ -137,14 +137,27 @@ class IPAAnalyzer:
         with zipfile.ZipFile(self.ipa_path, 'r') as zf:
             zf.extractall(self.extracted_dir)
 
-        # Find the .app bundle
-        payload_dir = self.extracted_dir / "Payload"
-        if payload_dir.exists():
-            for item in payload_dir.iterdir():
-                if item.suffix == ".app" and item.is_dir():
-                    self.app_bundle = item
-                    print(f"    [+] Found app bundle: {item.name}")
-                    break
+        # Find the .app bundle - check multiple possible locations
+        # Standard structure: Payload/*.app
+        # Alternative structure: *.app at root (some unsigned IPAs)
+
+        search_locations = [
+            self.extracted_dir / "Payload",  # Standard IPA structure
+            self.extracted_dir,               # Root level (non-standard)
+        ]
+
+        for search_dir in search_locations:
+            if search_dir.exists():
+                for item in search_dir.iterdir():
+                    if item.suffix == ".app" and item.is_dir():
+                        self.app_bundle = item
+                        if search_dir == self.extracted_dir:
+                            print(f"    [+] Found app bundle at root (non-standard): {item.name}")
+                        else:
+                            print(f"    [+] Found app bundle: {item.name}")
+                        break
+            if self.app_bundle:
+                break
 
         if not self.app_bundle:
             print("    [!] No .app bundle found in IPA")
