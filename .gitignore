@@ -1,0 +1,36 @@
+# Large binaries - download separately
+frida-server*
+*.apk
+
+# Build artifacts
+hermes-skill.zip
+*.zip
+
+# OS files
+.DS_Store
+*/.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.Python
+env/
+venv/
+
+# Analysis output (user-generated)
+*_analysis/
+extracted/
+jadx_output/
+decompiled/
+*.hbc
+*.bundle
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Claude
+.claude/
