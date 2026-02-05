@@ -59,12 +59,8 @@ hermes-skill/
 │   │   ├── mitmproxy_capture.py
 │   │   └── correlate_traffic.py
 │   └── maestro/             # UI automation flows
-├── templates/
-│   └── ANALYSIS_TEMPLATE.md # Report template
-└── hermes-test-app/         # Test app with intentional vulnerabilities
-    ├── src/                 # React Native source
-    ├── builds/              # Pre-built APKs
-    └── EXPECTED_FINDINGS.json
+└── templates/
+    └── ANALYSIS_TEMPLATE.md # Report template
 ```
 
 ## Critical Shell Command Rules
@@ -118,39 +114,6 @@ rm -rf directory/
 - `hermes_rs`: Upstream has missing source, `cargo install` fails
 - Objection: May need sqlite3 fix on macOS Conda
 - r2hermes: Use `r2pm -ci r2hermes` (run `r2pm update` first if issues)
-
-## Testing Tracker
-
-**IMPORTANT:** When testing the toolkit against real-world apps, you MUST:
-
-1. **Update `TESTING_TRACKER.md`** after each app you test with:
-   - Test results (pass/fail for each check)
-   - Issues encountered and workarounds
-   - Learnings and potential improvements to the toolkit
-
-2. **Track improvements** identified during testing:
-   - Add to "Improvements to Implement" section
-   - Implement improvements as appropriate
-   - Update "Script Changes Made" when modifying scripts
-
-3. **Update summary statistics** at the bottom of the tracker
-
-This tracking is essential because testing will span multiple sessions and context compactions. The tracker ensures continuity and captures all learnings.
-
-See `TESTING_TRACKER.md` for current test progress and downloaded apps.
-
----
-
-## Test App
-
-The `hermes-test-app/` contains a React Native app with intentional vulnerabilities for toolkit validation:
-- Hardcoded API keys, AWS credentials, JWT tokens
-- Known REST, GraphQL, WebSocket endpoints
-- Insecure HTTP endpoints
-
-**DO NOT USE IN PRODUCTION** - Contains intentional secrets (all fake but realistic).
-
-See `hermes-test-app/EXPECTED_FINDINGS.json` for validation checklist.
 
 ## User Preferences
 

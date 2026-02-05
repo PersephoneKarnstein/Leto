@@ -64,7 +64,6 @@ frida -U -f com.target.app -l scripts/frida/ios_ssl_bypass.js
 hermes-skill/
 ├── SKILL-android.md      # Android skill documentation
 ├── SKILL-ios.md          # iOS skill documentation
-├── TESTING_TRACKER.md    # Real-world app testing results
 ├── README.md             # This file
 ├── scripts/
 │   ├── check_tools.py        # Android tool checker
@@ -158,8 +157,6 @@ The toolkit has been tested against **13 real-world React Native applications** 
 - 9/13 apps implement root/jailbreak detection
 - **75% false positive rate** on automated secret detection
 - Only 1/4 flagged "secrets" were confirmed after deep analysis
-
-See [TESTING_TRACKER.md](TESTING_TRACKER.md) for detailed results.
 
 ## License
 
