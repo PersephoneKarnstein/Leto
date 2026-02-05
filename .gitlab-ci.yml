@@ -1,33 +1,68 @@
 stages:
   - build
 
-variables:
-  PACKAGE_NAME: "hermes-skill"
-
-create-release-zip:
+create-release-zips:
   stage: build
   image: alpine:latest
   before_script:
-    - apk add --no-cache zip
+    - apk add --no-cache zip python3
   script:
-    - echo "Creating release package..."
-    - zip -r ${PACKAGE_NAME}.zip SKILL.md scripts/ templates/ .gitlab-ci.yml -x "*.DS_Store" -x "scripts/.DS_Store" -x "__pycache__/*" -x "*.pyc"
-    - echo "Package created - ${PACKAGE_NAME}.zip"
-    - unzip -l ${PACKAGE_NAME}.zip
+    - echo "Creating Android skill package..."
+    - |
+      python3 << 'EOF'
+      import zipfile
+      import os
+
+      def create_skill_zip(skill_md_src, output_zip):
+          with zipfile.ZipFile(output_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
+              # Add SKILL.md (renamed from platform-specific file)
+              zf.write(skill_md_src, 'SKILL.md')
+
+              # Add scripts
+              for root, dirs, files in os.walk('scripts'):
+                  files = [f for f in files if not f.startswith('.') and not f.endswith('.pyc')]
+                  dirs[:] = [d for d in dirs if d != '__pycache__']
+                  for file in files:
+                      src_path = os.path.join(root, file)
+                      zf.write(src_path, src_path)
+
+              # Add templates
+              for root, dirs, files in os.walk('templates'):
+                  files = [f for f in files if not f.startswith('.')]
+                  for file in files:
+                      src_path = os.path.join(root, file)
+                      zf.write(src_path, src_path)
+
+      # Create Android skill
+      create_skill_zip('SKILL-android.md', 'hermes-android.zip')
+      print("Created hermes-android.zip")
+
+      # Create iOS skill
+      create_skill_zip('SKILL-ios.md', 'hermes-ios.zip')
+      print("Created hermes-ios.zip")
+      EOF
+    - echo "Packages created:"
+    - ls -lh hermes-*.zip
+    - echo "--- Android contents ---"
+    - unzip -l hermes-android.zip
+    - echo "--- iOS contents ---"
+    - unzip -l hermes-ios.zip
   artifacts:
-    name: "${PACKAGE_NAME}-${CI_COMMIT_SHORT_SHA}"
+    name: "hermes-skills-${CI_COMMIT_SHORT_SHA}"
     paths:
-      - ${PACKAGE_NAME}.zip
+      - hermes-android.zip
+      - hermes-ios.zip
     expire_in: 30 days
   rules:
     - if: $CI_PIPELINE_SOURCE == "push"
       when: always
 
-# Note: The following files are NOT included in the package:
+# Note: The following files are NOT included in the packages:
 # - frida-server-* (download from https://github.com/frida/frida/releases)
 # - *.apk files (user-provided)
 # - README.md (repo documentation only)
 # - .git/ (version control)
+# - SKILL.md (original combined file, replaced by platform-specific versions)
 #
 # Users should download frida-server matching their device:
 # curl -sL "https://github.com/frida/frida/releases/download/VERSION/frida-server-VERSION-android-ARCH.xz" -o frida-server.xz
