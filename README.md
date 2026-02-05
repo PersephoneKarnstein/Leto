@@ -29,14 +29,14 @@ frida -U -f com.target.app -l scripts/frida/universal_ssl_bypass.js
 
 ### iOS
 ```bash
-# 1. Extract IPA
-unzip -o app.ipa -d extracted_ipa/
+# 1. Check tools
+python scripts/check_tools_ios.py
 
-# 2. Verify Hermes bundle
-file extracted_ipa/Payload/*.app/main.jsbundle
+# 2. Analyze IPA
+python scripts/analyze_ipa.py target.ipa --decompile
 
-# 3. Analyze bundle
-r2 -qc 'pd:ha' main.jsbundle > decompiled.js
+# 3. Verify Hermes version
+file ./target_analysis/extracted/Payload/*.app/main.jsbundle
 
 # 4. Run with Frida (jailbroken device)
 frida -U -f com.target.app -l scripts/frida/ios_ssl_bypass.js
@@ -50,11 +50,13 @@ hermes-skill/
 ├── SKILL-ios.md          # iOS skill documentation
 ├── README.md             # This file
 ├── scripts/
-│   ├── check_tools.py    # Verify tool installation
-│   ├── analyze_apk.py    # Automated APK analysis
-│   ├── analyze_bundle.py # Hermes bundle analysis
-│   ├── extract_bundle.py # Extract from APK/device
-│   ├── patch_and_repack.py # Patch and rebuild APK
+│   ├── check_tools.py        # Android tool checker
+│   ├── check_tools_ios.py    # iOS tool checker
+│   ├── analyze_apk.py        # Automated APK analysis
+│   ├── analyze_ipa.py        # Automated IPA analysis
+│   ├── analyze_bundle.py     # Hermes bundle analysis
+│   ├── extract_bundle.py     # Extract from APK/device
+│   ├── patch_and_repack.py   # Patch and rebuild APK
 │   ├── frida/
 │   │   ├── universal_ssl_bypass.js  # SSL pinning bypass (40+ methods)
 │   │   ├── root_bypass.js           # Root/emulator detection bypass
@@ -90,6 +92,7 @@ hermes-skill/
 - Hermes version identification (`file` command most reliable)
 - String and API endpoint extraction
 - JADX decompilation for Java/Kotlin code
+- iOS entitlements and privacy manifest analysis (iOS 17+)
 - Secret scanning with gitleaks/trufflehog
 
 ### Dynamic Analysis
@@ -104,9 +107,13 @@ hermes-skill/
 | Feature | Android | iOS |
 |---------|---------|-----|
 | Bundle location | `assets/index.android.bundle` | `main.jsbundle` |
-| Emulator | ARM64/x86_64 AVD | N/A (device only) |
+| Analysis script | `analyze_apk.py` | `analyze_ipa.py` |
+| Tool checker | `check_tools.py` | `check_tools_ios.py` |
+| Emulator | ARM64/x86_64 AVD | iOS Simulator (limited)* |
 | Root/JB tools | Frida server | Palera1n, Dopamine |
 | Patching | Objection, apktool | Objection + codesign |
+
+*iOS Simulator only works with apps you build from source. App Store IPAs are device-only.
 
 ## License
 
