@@ -1,0 +1,71 @@
+# Sample Maestro Flow: Authentication Testing
+#
+# Customize appId and element identifiers for your target app.
+# Run with: maestro test sample_auth_flow.yaml
+#
+# Use with Frida/Burp for full dynamic analysis:
+#   Terminal 1: frida -U -f APP_ID -l ../frida/hermes_hooks.js --no-pause
+#   Terminal 2: maestro test sample_auth_flow.yaml
+
+appId: com.example.app  # CHANGE THIS to target app package
+---
+
+# Launch the app
+- launchApp
+
+# Wait for initial load
+- waitForAnimationToEnd
+
+# Screenshot initial state
+- takeScreenshot: "screenshots/01_initial.png"
+
+# --- Login Flow ---
+
+# Tap login button (try different selectors)
+- tapOn:
+    text: "Log In"
+    optional: true
+- tapOn:
+    text: "Sign In"
+    optional: true
+
+# Enter email/username
+- tapOn:
+    id: ".*email.*"
+    optional: true
+- tapOn:
+    text: "Email"
+    optional: true
+- inputText: "test@example.com"
+
+# Enter password
+- tapOn:
+    id: ".*password.*"
+    optional: true
+- tapOn:
+    text: "Password"
+    optional: true
+- inputText: "TestPassword123!"
+
+# Screenshot before submit
+- takeScreenshot: "screenshots/02_credentials_entered.png"
+
+# Submit login
+- tapOn:
+    text: "Sign In"
+    optional: true
+- tapOn:
+    text: "Log In"
+    optional: true
+- tapOn:
+    text: "Submit"
+    optional: true
+
+# Wait for response
+- waitForAnimationToEnd
+- extendedWaitUntil:
+    visible: "Dashboard|Home|Welcome"
+    timeout: 10000
+
+# Screenshot result
+- takeScreenshot: "screenshots/03_post_login.png"

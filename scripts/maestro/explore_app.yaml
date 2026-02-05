@@ -1,0 +1,66 @@
+# Maestro Flow: App Exploration
+#
+# Systematically explores an app's UI to discover functionality.
+# Captures screenshots at each step for documentation.
+#
+# Usage: maestro test explore_app.yaml
+# Combined with Burp: captures all API calls made during exploration
+
+appId: com.example.app  # CHANGE THIS
+---
+
+# Setup
+- launchApp
+- waitForAnimationToEnd
+- takeScreenshot: "explore/00_launch.png"
+
+# Explore main navigation
+- runFlow:
+    when:
+      visible: "Menu|☰|≡"
+    commands:
+      - tapOn: "Menu"
+      - waitForAnimationToEnd
+      - takeScreenshot: "explore/01_menu.png"
+
+# Check bottom navigation tabs if present
+- runFlow:
+    when:
+      visible: "Home"
+    commands:
+      - tapOn: "Home"
+      - waitForAnimationToEnd
+      - takeScreenshot: "explore/02_home.png"
+
+- runFlow:
+    when:
+      visible: "Profile|Account|Settings"
+    commands:
+      - tapOn:
+          text: "Profile|Account|Settings"
+      - waitForAnimationToEnd
+      - takeScreenshot: "explore/03_profile.png"
+
+- runFlow:
+    when:
+      visible: "Search"
+    commands:
+      - tapOn: "Search"
+      - waitForAnimationToEnd
+      - takeScreenshot: "explore/04_search.png"
+
+# Scroll main content to trigger lazy loading
+- scroll
+- waitForAnimationToEnd
+- takeScreenshot: "explore/05_scrolled.png"
+
+# Look for settings/preferences
+- runFlow:
+    when:
+      visible: "Settings|⚙|Preferences"
+    commands:
+      - tapOn:
+          text: "Settings|⚙|Preferences"
+      - waitForAnimationToEnd
+      - takeScreenshot: "explore/06_settings.png"
+      - back
