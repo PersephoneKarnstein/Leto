@@ -163,8 +163,16 @@ strings ./analysis/extracted/assets/index.android.bundle | grep -E '/api/|/v[0-9
 strings ./analysis/extracted/assets/index.android.bundle | grep -iE 'key|secret|token|password' > potential_secrets.txt
 
 # 4d. Secret scanning (use multiple tools - they find different things)
-gitleaks detect --source ./analysis/apktool/ --no-git -v > gitleaks_results.txt
-trufflehog filesystem ./analysis/apktool/res/ --no-update > trufflehog_results.txt
+# Note: gitleaks syntax varies by version - check `gitleaks --help`
+gitleaks dir ./analysis/apktool/ -v > gitleaks_results.txt 2>&1
+trufflehog filesystem ./analysis/apktool/res/ --no-update > trufflehog_results.txt 2>&1
+
+# WARNING: Automated scanners produce false positives!
+# Common false positives:
+# - Unicode emoji sequences (e.g., "1F471-1F3FC-200D-2640-FE0F")
+# - Build verification tokens (Sentry, etc.)
+# - Base64-encoded non-secrets
+# Always manually review findings before reporting!
 
 # 4e. Manual secret check (scanners miss these!)
 grep -iE 'api.*key|firebase|google_api' ./analysis/apktool/res/values/strings.xml
@@ -978,6 +986,30 @@ hbctool asm ./output_dir modified.bundle
 
 ## APK Extraction Workflow
 
+### Obtaining APKs for Analysis
+
+**Recommended Sources (in order of preference):**
+
+1. **Official GitHub Releases** - Open source apps like Mattermost provide direct APK downloads
+   ```
+   https://github.com/mattermost/mattermost-mobile/releases
+   ```
+
+2. **ADB from device** - Extract from installed app (requires device/emulator)
+   ```bash
+   adb shell pm path com.target.app
+   adb pull /path/to/base.apk
+   ```
+
+3. **APKMirror/APKPure** - Third-party mirror sites (verify checksums when possible)
+   - Note: These sites often block automated downloads
+   - May require manual browser download
+
+**⚠️ IMPORTANT:** APK mirror sites frequently block `curl`/`wget` with anti-bot measures. If automated download fails, try:
+- Manual browser download
+- Different user agent
+- Direct links from official release pages
+
 ### Extract Hermes Bundle from APK
 
 ```bash
@@ -1054,6 +1086,16 @@ python scripts/analyze_apk.py target.apk --output-dir ./analysis_output
 3. **Detects Version** - Identifies Hermes bytecode version and estimated RN version
 4. **Extracts Strings** - Finds API endpoints, keys, JWTs, Firebase URLs
 5. **Generates Report** - Creates JSON report with all findings
+
+**⚠️ IMPORTANT:** The script's version detection may report incorrect values for some bundles. Always verify the Hermes version using the `file` command:
+
+```bash
+# Verify version after running analyze_apk.py
+file ./analysis/extracted/assets/index.android.bundle
+# Expected: "Hermes JavaScript bytecode, version 96"
+```
+
+If versions don't match, trust the `file` command output.
 
 ### Output Structure
 
@@ -1769,6 +1811,24 @@ curl -fsSL "https://get.maestro.mobile.dev" | bash
 # Verify
 maestro --version
 ```
+
+#### Flow Development Best Practice
+
+**IMPORTANT:** Always capture screenshots first to understand the actual UI before writing assertions:
+
+```yaml
+# discovery_flow.yaml - Run this FIRST to see actual UI
+appId: com.target.app
+---
+- launchApp
+- takeScreenshot: screen1_initial
+- tapOn:
+    index: 0  # Tap first button (whatever it is)
+- waitForAnimationToEnd
+- takeScreenshot: screen2_after_tap
+```
+
+Then check the screenshots in the current directory and build your actual test flow based on what you observe. Element text/IDs may differ from documentation or expectations.
 
 #### Basic Flow Syntax (YAML)
 
@@ -2761,6 +2821,17 @@ adb shell /data/local/tmp/frida-server --version
 |-------------|--------------|---------|-------|
 | 17.6.2 | 17.5.0 | latest | 17.6.2 server crashes on some emulators |
 | 16.3.3 | 16.3.3 | N/A | r2frida needs 17.x |
+
+**CLI Differences Between Versions:**
+- frida-tools 17.x: No `--no-pause` flag - app resumes automatically after `-f`
+- frida-tools 16.x: No `--no-pause` flag either - use `%resume` in REPL
+
+**Hook Failures Are Normal:** Frida hooks may fail on specific apps due to:
+- Different class structures (e.g., OkHttp wrapped in custom clients)
+- Obfuscated method signatures
+- Missing classes in the app
+
+Check error messages and adapt hooks accordingly. Use `Java.enumerateLoadedClasses()` to find actual class names.
 
 ### Installing frida-server
 
