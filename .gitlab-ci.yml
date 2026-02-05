@@ -11,17 +11,8 @@ create-release-zip:
     - apk add --no-cache zip
   script:
     - echo "Creating release package..."
-    - |
-      zip -r ${PACKAGE_NAME}.zip \
-        SKILL.md \
-        scripts/ \
-        templates/ \
-        .gitlab-ci.yml \
-        -x "*.DS_Store" \
-        -x "scripts/.DS_Store" \
-        -x "__pycache__/*" \
-        -x "*.pyc"
-    - echo "Package created: ${PACKAGE_NAME}.zip"
+    - zip -r ${PACKAGE_NAME}.zip SKILL.md scripts/ templates/ .gitlab-ci.yml -x "*.DS_Store" -x "scripts/.DS_Store" -x "__pycache__/*" -x "*.pyc"
+    - echo "Package created - ${PACKAGE_NAME}.zip"
     - unzip -l ${PACKAGE_NAME}.zip
   artifacts:
     name: "${PACKAGE_NAME}-${CI_COMMIT_SHORT_SHA}"
