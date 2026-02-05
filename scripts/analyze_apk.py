@@ -44,7 +44,7 @@ class APKAnalyzer:
             "permissions": [],
         }
 
-    def run(self, extract_only: bool = False, decompile: bool = False):
+    def run(self, extract_only: bool = False, decompile: bool = False, enhanced: bool = False):
         """Run the full analysis workflow."""
         print(f"[*] Analyzing: {self.apk_path}")
         print(f"[*] Output directory: {self.output_dir}")
@@ -52,7 +52,7 @@ class APKAnalyzer:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Step 1: Extract APK
-        print("\n[1/5] Extracting APK...")
+        print("\n[1/6] Extracting APK...")
         self.extract_apk()
 
         if extract_only:
@@ -60,23 +60,30 @@ class APKAnalyzer:
             return
 
         # Step 2: Identify Hermes bundle
-        print("\n[2/5] Identifying Hermes bundle...")
+        print("\n[2/6] Identifying Hermes bundle...")
         self.find_hermes_bundle()
 
         # Step 3: Detect Hermes version
-        print("\n[3/5] Detecting Hermes version...")
+        print("\n[3/6] Detecting Hermes version...")
         self.detect_hermes_version()
 
         # Step 4: Extract strings and endpoints
-        print("\n[4/5] Extracting strings and endpoints...")
+        print("\n[4/6] Extracting strings and endpoints...")
         self.extract_strings()
 
-        # Step 5: Decompile if requested
+        # Step 5: Enhanced secret scan if requested
+        if enhanced and self.report["bundle_path"]:
+            print("\n[5/6] Running enhanced secret scan...")
+            self.run_enhanced_scan()
+        else:
+            print("\n[5/6] Skipping enhanced scan (use --enhanced to enable)")
+
+        # Step 6: Decompile if requested
         if decompile and self.report["bundle_path"]:
-            print("\n[5/5] Decompiling bundle...")
+            print("\n[6/6] Decompiling bundle...")
             self.decompile_bundle()
         else:
-            print("\n[5/5] Skipping decompilation (use --decompile to enable)")
+            print("\n[6/6] Skipping decompilation (use --decompile to enable)")
 
         # Generate report
         self.generate_report()
@@ -149,92 +156,154 @@ class APKAnalyzer:
         print("    [!] No bundle found")
 
     def detect_hermes_version(self):
-        """Detect Hermes bytecode version."""
+        """Detect Hermes bytecode version using multiple methods."""
         if not self.report["hermes_detected"]:
             return
 
         bundle_path = Path(self.report["bundle_path"])
 
-        # Read header to get version
-        with open(bundle_path, 'rb') as f:
-            magic = f.read(4)
-            version = int.from_bytes(f.read(4), 'little')
+        # Hermes bytecode versions
+        version_map = {
+            59: "0.1.0",
+            62: "0.4.0",
+            74: "0.7.0",
+            76: "0.8.0",
+            84: "0.11.0",
+            85: "0.12.0",
+            89: "React Native 0.64+",
+            90: "React Native 0.65+",
+            93: "React Native 0.70+",
+            94: "React Native 0.71+",
+            95: "React Native 0.72+",
+            96: "React Native 0.73+",
+        }
 
-            # Hermes bytecode versions
-            version_map = {
-                59: "0.1.0",
-                62: "0.4.0",
-                74: "0.7.0",
-                76: "0.8.0",
-                84: "0.11.0",
-                85: "0.12.0",
-                89: "React Native 0.64+",
-                90: "React Native 0.65+",
-                93: "React Native 0.70+",
-                94: "React Native 0.71+",
-                95: "React Native 0.72+",
-                96: "React Native 0.73+",
-            }
+        version = None
 
+        # Method 1: Use `file` command (most reliable)
+        try:
+            result = subprocess.run(
+                ["file", str(bundle_path)],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            # Parse: "Hermes JavaScript bytecode, version 96"
+            match = re.search(r'Hermes JavaScript bytecode, version (\d+)', result.stdout)
+            if match:
+                version = int(match.group(1))
+                print(f"    [+] Version detected via file command: {version}")
+        except Exception as e:
+            print(f"    [!] file command failed: {e}")
+
+        # Method 2: Parse header directly (fallback)
+        if version is None:
+            try:
+                with open(bundle_path, 'rb') as f:
+                    # Skip magic bytes (4 bytes)
+                    f.read(4)
+                    # Read version - Hermes header format varies by version
+                    # For newer versions, version is at offset 4
+                    raw_version = int.from_bytes(f.read(4), 'little')
+                    # Check if it looks like a valid version (< 200)
+                    if raw_version < 200:
+                        version = raw_version
+                    else:
+                        # Try parsing as older format
+                        f.seek(8)
+                        raw_version = int.from_bytes(f.read(4), 'little')
+                        if raw_version < 200:
+                            version = raw_version
+                print(f"    [+] Version from header parsing: {version}")
+            except Exception as e:
+                print(f"    [!] Header parsing failed: {e}")
+
+        if version:
             self.report["hermes_version"] = {
                 "bytecode_version": version,
                 "estimated_rn_version": version_map.get(version, f"Unknown (bytecode v{version})")
             }
-
             print(f"    [+] Bytecode version: {version}")
             print(f"    [+] Estimated version: {self.report['hermes_version']['estimated_rn_version']}")
+        else:
+            print("    [!] Could not determine Hermes version")
+            print("    [!] Use 'file <bundle>' manually to verify")
 
     def extract_strings(self):
-        """Extract interesting strings from the bundle."""
+        """Extract interesting strings from the bundle including encoded secrets."""
         if not self.report["bundle_path"]:
             return
 
         bundle_path = Path(self.report["bundle_path"])
 
-        # Read file in chunks to handle large bundles
-        chunk_size = 2 * 1024 * 1024  # 2MB chunks
+        # Read entire file for string analysis
+        with open(bundle_path, 'rb') as f:
+            content_bytes = f.read()
+        content = content_bytes.decode('utf-8', errors='ignore')
+
         strings_found = set()
 
-        # Patterns to look for
+        # Direct pattern matching
         patterns = {
-            'api_endpoints': re.compile(rb'https?://[a-zA-Z0-9\-._~:/?#\[\]@!$&\'()*+,;=]+'),
-            'api_keys': re.compile(rb'(?:api[_-]?key|apikey|api_secret|secret_key)["\s:=]+["\']?([a-zA-Z0-9_\-]{20,})["\']?', re.I),
-            'aws': re.compile(rb'(?:AKIA|ABIA|ACCA)[A-Z0-9]{16}'),
-            'jwt': re.compile(rb'eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+'),
-            'firebase': re.compile(rb'[a-z0-9-]+\.firebaseio\.com'),
-            'graphql': re.compile(rb'(?:query|mutation|subscription)\s+\w+'),
+            'api_endpoints': re.compile(r'https?://[a-zA-Z0-9\-._~:/?#\[\]@!$&\'()*+,;=]+'),
+            'aws_key': re.compile(r'AKIA[0-9A-Z]{16}'),
+            'jwt': re.compile(r'eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+'),
+            'firebase_key': re.compile(r'AIza[a-zA-Z0-9_-]{35}'),
+            'github_token': re.compile(r'gh[pousr]_[a-zA-Z0-9]{36,}'),
+            'stripe_key': re.compile(r'sk_(?:test|live)_[a-zA-Z0-9]{24,}'),
+            'sendgrid_key': re.compile(r'SG\.[a-zA-Z0-9_-]{22,}'),
+            'oauth_secret': re.compile(r'GOCSPX-[a-zA-Z0-9_-]{28}'),
+            'database_url': re.compile(r'(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)://[^\s"\'<>]+'),
+            'private_key': re.compile(r'-----BEGIN (?:RSA |EC )?PRIVATE KEY-----'),
         }
 
-        with open(bundle_path, 'rb') as f:
-            while True:
-                chunk = f.read(chunk_size)
-                if not chunk:
-                    break
+        # Run direct pattern matching
+        for name, pattern in patterns.items():
+            for match in pattern.finditer(content):
+                value = match.group()
+                if name == 'api_endpoints':
+                    # Filter common CDN/tracking URLs
+                    skip = ['facebook.com', 'google.com', 'googleapis.com', 'cloudflare',
+                            'cdn', 'analytics', 'react.dev', 'github.com/react-native']
+                    if not any(x in value.lower() for x in skip):
+                        strings_found.add(('url', value))
+                else:
+                    strings_found.add((name, value[:100] + '...' if len(value) > 100 else value))
 
-                # Find URLs
-                for match in patterns['api_endpoints'].finditer(chunk):
-                    url = match.group().decode('utf-8', errors='ignore')
-                    # Filter out common CDN/tracking URLs
-                    if not any(x in url.lower() for x in ['facebook.com', 'google.com', 'googleapis.com',
-                                                           'cloudflare', 'cdn', 'analytics']):
-                        strings_found.add(('url', url))
+        # Base64 encoded secrets detection
+        import base64
+        b64_pattern = re.compile(r'["\']([A-Za-z0-9+/]{20,}={0,2})["\']')
+        interesting_keywords = ['api', 'key', 'secret', 'password', 'token', 'http', 'admin', 'aws', 'slack']
 
-                # Find potential API keys
-                for match in patterns['api_keys'].finditer(chunk):
-                    strings_found.add(('api_key', match.group(1).decode('utf-8', errors='ignore')))
+        for match in b64_pattern.finditer(content):
+            b64_str = match.group(1)
+            try:
+                decoded = base64.b64decode(b64_str).decode('utf-8', errors='ignore')
+                if any(kw in decoded.lower() for kw in interesting_keywords):
+                    strings_found.add(('base64_decoded', f"[B64] {decoded[:80]}..."))
+            except Exception:
+                pass
 
-                # Find AWS keys
-                for match in patterns['aws'].finditer(chunk):
-                    strings_found.add(('aws_key', match.group().decode('utf-8', errors='ignore')))
+        # Hex encoded secrets detection
+        hex_pattern = re.compile(r'["\']([0-9a-fA-F]{20,})["\']')
+        for match in hex_pattern.finditer(content):
+            hex_str = match.group(1)
+            if len(hex_str) % 2 == 0:
+                try:
+                    decoded = bytes.fromhex(hex_str).decode('utf-8', errors='ignore')
+                    if decoded and len(decoded) > 5 and decoded.isprintable():
+                        strings_found.add(('hex_decoded', f"[HEX] {decoded[:80]}..."))
+                except Exception:
+                    pass
 
-                # Find JWTs
-                for match in patterns['jwt'].finditer(chunk):
-                    jwt = match.group().decode('utf-8', errors='ignore')
-                    strings_found.add(('jwt', jwt[:50] + '...'))
-
-                # Find Firebase URLs
-                for match in patterns['firebase'].finditer(chunk):
-                    strings_found.add(('firebase', match.group().decode('utf-8', errors='ignore')))
+        # Anti-tampering detection
+        anti_tamper_indicators = [
+            'checkRoot', 'isRooted', 'checkFrida', 'checkDebugger', 'checkEmulator',
+            'checkIntegrity', 'SSL_PINS', 'certificatePinning', 'jailbreakCheck'
+        ]
+        for indicator in anti_tamper_indicators:
+            if indicator in content:
+                strings_found.add(('anti_tamper', indicator))
 
         # Categorize findings
         for category, value in strings_found:
@@ -251,6 +320,52 @@ class APKAnalyzer:
 
         print(f"    [+] Found {len(self.report['api_endpoints'])} unique endpoints")
         print(f"    [+] Found {len(self.report['interesting_strings'])} interesting strings")
+
+        # Report anti-tampering if found
+        anti_tamper = [s for s in self.report['interesting_strings'] if s['type'] == 'anti_tamper']
+        if anti_tamper:
+            print(f"    [!] Anti-tampering code detected: {len(anti_tamper)} indicators")
+
+    def run_enhanced_scan(self):
+        """Run the enhanced secret scanner for obfuscated secrets."""
+        bundle_path = Path(self.report["bundle_path"])
+
+        # Try to import the enhanced scanner
+        try:
+            script_dir = Path(__file__).parent
+            sys.path.insert(0, str(script_dir))
+            from enhanced_secret_scan import EnhancedSecretScanner
+
+            scanner = EnhancedSecretScanner(str(bundle_path))
+            findings = scanner.scan_all()
+            summary = scanner.get_summary()
+
+            # Add to report
+            self.report["enhanced_scan"] = {
+                "summary": summary,
+                "base64_secrets": findings['base64_encoded'][:20],
+                "hex_secrets": findings['hex_encoded'][:20],
+                "char_arrays": findings['char_code_arrays'][:10],
+                "split_fragments": findings['split_fragments'][:20],
+                "anti_tampering": findings['anti_tampering'],
+            }
+
+            print(f"    [+] Total findings: {summary['total_findings']}")
+            print(f"    [+] Base64 encoded secrets: {summary['base64_encoded']}")
+            print(f"    [+] Hex encoded secrets: {summary['hex_encoded']}")
+            print(f"    [+] Character code arrays: {summary['char_code_arrays']}")
+            print(f"    [+] Split string fragments: {summary['split_fragments']}")
+            print(f"    [+] Anti-tampering indicators: {summary['anti_tampering_indicators']}")
+
+            # Save detailed enhanced scan results
+            enhanced_report_path = self.output_dir / "enhanced_scan.json"
+            with open(enhanced_report_path, 'w') as f:
+                json.dump(findings, f, indent=2)
+            print(f"    [+] Detailed scan saved to: {enhanced_report_path}")
+
+        except ImportError as e:
+            print(f"    [!] Enhanced scanner not available: {e}")
+            print("    [!] Run: python scripts/enhanced_secret_scan.py <bundle> manually")
 
     def decompile_bundle(self):
         """Decompile the Hermes bundle using available tools."""
@@ -364,6 +479,7 @@ Examples:
     parser.add_argument("--output-dir", "-o", help="Output directory")
     parser.add_argument("--extract-only", action="store_true", help="Only extract APK contents")
     parser.add_argument("--decompile", action="store_true", help="Attempt to decompile Hermes bundle")
+    parser.add_argument("--enhanced", action="store_true", help="Run enhanced secret scan (detects obfuscated secrets)")
 
     args = parser.parse_args()
 
@@ -372,7 +488,7 @@ Examples:
         sys.exit(1)
 
     analyzer = APKAnalyzer(args.apk, args.output_dir)
-    analyzer.run(extract_only=args.extract_only, decompile=args.decompile)
+    analyzer.run(extract_only=args.extract_only, decompile=args.decompile, enhanced=args.enhanced)
 
 
 if __name__ == "__main__":

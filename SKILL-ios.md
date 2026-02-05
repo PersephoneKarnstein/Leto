@@ -17,8 +17,8 @@ Toolkit for reverse engineering React Native **iOS** applications compiled with 
 # 1. Check tools
 python scripts/check_tools_ios.py
 
-# 2. Analyze IPA
-python scripts/analyze_ipa.py target.ipa --decompile
+# 2. Analyze IPA (with enhanced secret scanning)
+python scripts/analyze_ipa.py target.ipa --decompile --enhanced
 
 # 3. Verify Hermes version (most reliable method)
 file ./target_analysis/extracted/Payload/*.app/main.jsbundle
@@ -111,8 +111,8 @@ xcrun simctl list runtimes  # Should show iOS runtimes
 ### Phase 2: Automated Analysis
 
 ```bash
-# Full automated analysis
-python scripts/analyze_ipa.py target.ipa --decompile
+# Full automated analysis with enhanced secret scanning
+python scripts/analyze_ipa.py target.ipa --decompile --enhanced
 
 # IMPORTANT: Verify Hermes version with file command
 file ./target_analysis/extracted/Payload/*.app/main.jsbundle
@@ -164,7 +164,77 @@ r2 -qc 'iz~http' main.jsbundle
 strings main.jsbundle | grep -E 'api|endpoint|token'
 ```
 
-### Phase 5: Dynamic Analysis (Choose One)
+### Phase 5: Enhanced Secret Scanning
+
+Basic string matching misses obfuscated secrets. Use the enhanced scanner:
+
+```bash
+# Run enhanced secret scan (detects obfuscated secrets)
+python scripts/enhanced_secret_scan.py main.jsbundle
+
+# Or with JSON output for automation
+python scripts/enhanced_secret_scan.py main.jsbundle --json
+```
+
+The enhanced scanner detects:
+- **Base64 encoded secrets** - decodes and checks for sensitive data
+- **Hex encoded secrets** - decodes hex strings
+- **Character code arrays** - detects `[65, 75, 73, ...]` patterns (AWS keys, etc.)
+- **Split string fragments** - finds `sk_test_`, `AKIA`, `ghp_` prefixes
+- **Anti-tampering indicators** - jailbreak detection, Frida detection, SSL pinning
+
+### Phase 6: Obfuscation Analysis
+
+```bash
+# Detect obfuscation techniques
+python scripts/detect_obfuscation.py target.ipa
+
+# Common obfuscation patterns in Hermes bundles:
+# - String splitting with runtime concatenation
+# - Base64/hex encoding of secrets
+# - Character code arrays: [65,75,73,65,...] = "AKIA..."
+# - Control flow flattening (javascript-obfuscator)
+```
+
+**Obfuscation effectiveness (from testing):**
+
+| Technique | Detection Difficulty |
+|-----------|---------------------|
+| Direct strings | Easy - simple grep |
+| Base64 encoding | Easy - decode and scan |
+| Hex encoding | Easy - decode and scan |
+| String splitting | Medium - fragments visible |
+| Char code arrays | Hard - may be optimized away |
+| Native storage | Very Hard - requires Frida |
+
+### Phase 7: Anti-Tampering Detection
+
+Apps may include protections that affect analysis:
+
+```bash
+# Check for anti-tampering code in bundle
+strings main.jsbundle | grep -iE 'jailbreak|frida|cydia|substrate|integrity'
+
+# Common iOS anti-tampering indicators:
+# - isJailbroken, checkJailbreak, JailMonkey
+# - checkFrida, frida-server, frida-agent
+# - checkDebugger, ptrace, sysctl
+# - checkCydia, checkSubstrate
+# - SSL_PINS, certificatePinning
+```
+
+**Bypassing anti-tampering:**
+```bash
+# Use jailbreak bypass Frida script
+frida -U -f com.target.app -l scripts/frida/ios_jailbreak_bypass.js
+
+# Combined bypass for stubborn apps
+cat scripts/frida/ios_ssl_bypass.js \
+    scripts/frida/ios_jailbreak_bypass.js > /tmp/ios_all.js
+frida -U -f com.target.app -l /tmp/ios_all.js
+```
+
+### Phase 8: Dynamic Analysis (Choose One)
 
 **Option A: Simulator** (apps you build)
 ```bash
@@ -592,6 +662,16 @@ r2 -wqc '.(fix-hbc)' main.jsbundle
 
 ## Troubleshooting
 
+### Hermes version detection issues
+
+The `analyze_ipa.py` script may sometimes report incorrect versions. **Always verify with `file` command:**
+```bash
+file main.jsbundle
+# Output: Hermes JavaScript bytecode, version 96
+```
+
+The `file` command is the most reliable method for version detection.
+
 ### r2hermes fails on large bundles
 
 Use `file` command for version detection:
@@ -602,6 +682,30 @@ file main.jsbundle
 Use `strings` for extraction:
 ```bash
 strings main.jsbundle | grep -E '^https?://'
+```
+
+For enhanced analysis on large bundles:
+```bash
+python scripts/enhanced_secret_scan.py main.jsbundle --json
+```
+
+### Secrets not detected (obfuscation)
+
+If standard scanning misses secrets, they may be obfuscated:
+
+```bash
+# Check for Base64 encoded secrets
+strings main.jsbundle | grep -oE '[A-Za-z0-9+/]{20,}={0,2}' | while read b64; do
+  echo "$b64" | base64 -d 2>/dev/null | grep -q 'api\|key\|secret' && echo "Found: $b64"
+done
+
+# Check for hex encoded secrets
+strings main.jsbundle | grep -oE '[0-9a-fA-F]{40,}' | while read hex; do
+  echo "$hex" | xxd -r -p 2>/dev/null
+done
+
+# Use enhanced scanner for comprehensive detection
+python scripts/enhanced_secret_scan.py main.jsbundle --category base64
 ```
 
 ### Frida can't connect to device
@@ -640,14 +744,16 @@ security cms -D -i profile.mobileprovision
 ## Security Checklist
 
 - [ ] Extract IPA and locate `main.jsbundle`
-- [ ] Verify Hermes bytecode vs plain JavaScript
+- [ ] Verify Hermes bytecode vs plain JavaScript (`file main.jsbundle`)
 - [ ] Analyze bundle with r2hermes/hermes-dec
 - [ ] Check `Info.plist` for URL schemes
 - [ ] Check App Transport Security (ATS) exceptions
 - [ ] Analyze PrivacyInfo.xcprivacy (iOS 17+)
 - [ ] Analyze Keychain usage
 - [ ] Check entitlements for sensitive capabilities
-- [ ] Run secret scanner (gitleaks)
+- [ ] Run basic secret scanner (gitleaks)
+- [ ] Run enhanced secret scanner (detects obfuscated secrets)
+- [ ] Check for anti-tampering code (jailbreak detection, Frida detection)
 - [ ] Test on jailbroken device with Frida
 - [ ] Bypass SSL pinning and jailbreak detection
 - [ ] Intercept traffic with Burp Suite

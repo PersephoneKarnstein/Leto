@@ -122,6 +122,77 @@ r2 -qc 'iz~http' index.android.bundle
 strings index.android.bundle | grep -E 'api|endpoint|token'
 ```
 
+### Phase 6: Enhanced Secret Scanning
+
+Basic string matching misses obfuscated secrets. Use the enhanced scanner:
+
+```bash
+# Run enhanced secret scan (detects obfuscated secrets)
+python scripts/enhanced_secret_scan.py index.android.bundle
+
+# Or run with full APK analysis
+python scripts/analyze_apk.py target.apk --enhanced
+```
+
+The enhanced scanner detects:
+- **Base64 encoded secrets** - decodes and checks for sensitive data
+- **Hex encoded secrets** - decodes hex strings
+- **Character code arrays** - detects `[65, 75, 73, ...]` patterns (AWS keys, etc.)
+- **Split string fragments** - finds `sk_test_`, `AKIA`, `ghp_` prefixes
+- **Anti-tampering indicators** - root detection, Frida detection, SSL pinning
+
+### Phase 7: Obfuscation Analysis
+
+```bash
+# Detect obfuscation techniques
+python scripts/detect_obfuscation.py target.apk
+
+# Common obfuscation patterns in Hermes bundles:
+# - String splitting with runtime concatenation
+# - Base64/hex encoding of secrets
+# - Character code arrays: [65,75,73,65,...] = "AKIA..."
+# - Control flow flattening (javascript-obfuscator)
+```
+
+**Obfuscation effectiveness (from testing):**
+
+| Technique | Detection Difficulty |
+|-----------|---------------------|
+| Direct strings | Easy - simple grep |
+| Base64 encoding | Easy - decode and scan |
+| Hex encoding | Easy - decode and scan |
+| String splitting | Medium - fragments visible |
+| Char code arrays | Hard - may be optimized away |
+| Native storage | Very Hard - requires Frida |
+
+### Phase 8: Anti-Tampering Detection
+
+Apps may include protections that affect analysis:
+
+```bash
+# Check for anti-tampering code in bundle
+strings index.android.bundle | grep -iE 'checkRoot|frida|jailbreak|emulator|integrity'
+
+# Common anti-tampering indicators:
+# - checkRootStatus, isRooted, RootBeer
+# - checkFrida, frida-server, frida-agent
+# - checkDebugger, isDebuggerAttached
+# - checkEmulator, goldfish, ranchu
+# - SSL_PINS, certificatePinning
+```
+
+**Bypassing anti-tampering:**
+```bash
+# Use root bypass Frida script
+frida -U -f com.target.app -l scripts/frida/root_bypass.js
+
+# Combined bypass for stubborn apps
+cat scripts/frida/universal_ssl_bypass.js \
+    scripts/frida/root_bypass.js \
+    scripts/frida/gms_firebase_bypass.js > /tmp/all.js
+frida -U -f com.target.app -l /tmp/all.js
+```
+
 ---
 
 ## Emulator Setup
@@ -282,17 +353,45 @@ r2 -wqc '.(fix-hbc)' bundle.hbc
 
 ## Troubleshooting
 
-### r2hermes fails on large bundles
+### Hermes version detection issues
 
-Use `file` command for version detection:
+The `analyze_apk.py` script may sometimes report incorrect versions. **Always verify with `file` command:**
 ```bash
 file index.android.bundle
 # Output: Hermes JavaScript bytecode, version 96
 ```
 
+The `file` command is the most reliable method for version detection.
+
+### r2hermes fails on large bundles
+
 Use `strings` for extraction:
 ```bash
 strings index.android.bundle | grep -E '^https?://'
+```
+
+For enhanced analysis on large bundles:
+```bash
+python scripts/enhanced_secret_scan.py index.android.bundle --json
+```
+
+### Secrets not detected (obfuscation)
+
+If standard scanning misses secrets, they may be obfuscated:
+
+```bash
+# Check for Base64 encoded secrets
+strings bundle | grep -oE '[A-Za-z0-9+/]{20,}={0,2}' | while read b64; do
+  echo "$b64" | base64 -d 2>/dev/null | grep -q 'api\|key\|secret' && echo "Found: $b64"
+done
+
+# Check for hex encoded secrets
+strings bundle | grep -oE '[0-9a-fA-F]{40,}' | while read hex; do
+  echo "$hex" | xxd -r -p 2>/dev/null
+done
+
+# Use enhanced scanner for comprehensive detection
+python scripts/enhanced_secret_scan.py bundle --category base64
 ```
 
 ### App stuck on splash (GMS dependency)

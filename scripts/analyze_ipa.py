@@ -70,7 +70,7 @@ class IPAAnalyzer:
             "frameworks": [],
         }
 
-    def run(self, extract_only: bool = False, decompile: bool = False):
+    def run(self, extract_only: bool = False, decompile: bool = False, enhanced: bool = False):
         """Run the full analysis workflow."""
         print(f"[*] Analyzing: {self.ipa_path}")
         print(f"[*] Output directory: {self.output_dir}")
@@ -78,7 +78,7 @@ class IPAAnalyzer:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Step 1: Extract IPA
-        print("\n[1/8] Extracting IPA...")
+        print("\n[1/9] Extracting IPA...")
         self.extract_ipa()
 
         if extract_only:
@@ -86,35 +86,42 @@ class IPAAnalyzer:
             return
 
         # Step 2: Check binary architecture
-        print("\n[2/8] Checking binary architecture...")
+        print("\n[2/9] Checking binary architecture...")
         self.check_architecture()
 
         # Step 3: Parse Info.plist
-        print("\n[3/8] Parsing Info.plist...")
+        print("\n[3/9] Parsing Info.plist...")
         self.parse_info_plist()
 
         # Step 4: Extract entitlements
-        print("\n[4/8] Extracting entitlements...")
+        print("\n[4/9] Extracting entitlements...")
         self.extract_entitlements()
 
         # Step 5: Parse privacy manifest
-        print("\n[5/8] Parsing privacy manifest...")
+        print("\n[5/9] Parsing privacy manifest...")
         self.parse_privacy_manifest()
 
         # Step 6: Identify Hermes bundle
-        print("\n[6/8] Identifying Hermes bundle...")
+        print("\n[6/9] Identifying Hermes bundle...")
         self.find_hermes_bundle()
 
         # Step 7: Extract strings and endpoints
-        print("\n[7/8] Extracting strings and endpoints...")
+        print("\n[7/9] Extracting strings and endpoints...")
         self.extract_strings()
 
-        # Step 8: Decompile if requested
+        # Step 8: Enhanced secret scanning
+        if enhanced and self.report["bundle_path"]:
+            print("\n[8/9] Running enhanced secret scan...")
+            self.run_enhanced_scan()
+        else:
+            print("\n[8/9] Skipping enhanced scan (use --enhanced to enable)")
+
+        # Step 9: Decompile if requested
         if decompile and self.report["bundle_path"]:
-            print("\n[8/8] Decompiling bundle...")
+            print("\n[9/9] Decompiling bundle...")
             self.decompile_bundle()
         else:
-            print("\n[8/8] Skipping decompilation (use --decompile to enable)")
+            print("\n[9/9] Skipping decompilation (use --decompile to enable)")
 
         # Generate report
         self.generate_report()
@@ -432,17 +439,50 @@ class IPAAnalyzer:
                     # Hermes magic: 0xc61fbc03
                     if magic[:4] == b'\xc6\x1f\xbc\x03':
                         self.report["hermes_detected"] = True
-                        # Read version
-                        version = int.from_bytes(magic[4:8], 'little')
-                        self.report["hermes_version"] = self._get_hermes_version(version)
                         print(f"    [+] Found Hermes bundle: {bundle_name}")
                         print(f"    [+] Size: {self.report['bundle_size']:,} bytes")
-                        print(f"    [+] Bytecode version: {version}")
+
+                        # Detect version using file command (most reliable)
+                        version = self._detect_hermes_version(bundle_path)
+                        if version:
+                            self.report["hermes_version"] = self._get_hermes_version(version)
+                            print(f"    [+] Bytecode version: {version}")
                     else:
                         print(f"    [+] Found JS bundle (not Hermes): {bundle_name}")
                 return
 
         print("    [!] No JavaScript bundle found")
+
+    def _detect_hermes_version(self, bundle_path: Path) -> Optional[int]:
+        """Detect Hermes version using multiple methods."""
+        version = None
+
+        # Method 1: Use `file` command (most reliable)
+        try:
+            result = subprocess.run(
+                ["file", str(bundle_path)],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            match = re.search(r'Hermes JavaScript bytecode, version (\d+)', result.stdout)
+            if match:
+                version = int(match.group(1))
+                return version
+        except Exception:
+            pass
+
+        # Method 2: Parse header directly (fallback)
+        try:
+            with open(bundle_path, 'rb') as f:
+                f.read(4)  # Skip magic
+                raw_version = int.from_bytes(f.read(4), 'little')
+                if raw_version < 200:
+                    return raw_version
+        except Exception:
+            pass
+
+        return version
 
     def _get_hermes_version(self, bytecode_version: int) -> Dict[str, Any]:
         """Map bytecode version to React Native version."""
@@ -533,6 +573,57 @@ class IPAAnalyzer:
 
         print(f"    [+] Found {len(self.report['api_endpoints'])} unique endpoints")
         print(f"    [+] Found {len(self.report['interesting_strings'])} interesting strings")
+
+    def run_enhanced_scan(self):
+        """Run enhanced secret scanning for obfuscated secrets."""
+        bundle_path = Path(self.report["bundle_path"])
+
+        # Try to import and run enhanced scanner
+        scripts_dir = Path(__file__).parent
+        enhanced_scanner_path = scripts_dir / "enhanced_secret_scan.py"
+
+        if enhanced_scanner_path.exists():
+            try:
+                result = subprocess.run(
+                    [sys.executable, str(enhanced_scanner_path), str(bundle_path), "--json"],
+                    capture_output=True,
+                    text=True,
+                    timeout=300
+                )
+
+                if result.returncode == 0 and result.stdout:
+                    try:
+                        enhanced_results = json.loads(result.stdout)
+
+                        # Add to report
+                        self.report["enhanced_scan"] = enhanced_results
+
+                        # Count findings
+                        total_findings = sum(
+                            len(v) for v in enhanced_results.get("findings", {}).values()
+                            if isinstance(v, list)
+                        )
+
+                        print(f"    [+] Enhanced scan found {total_findings} potential secrets")
+
+                        # Save detailed results
+                        enhanced_output = self.output_dir / "enhanced_scan_results.json"
+                        with open(enhanced_output, 'w') as f:
+                            json.dump(enhanced_results, f, indent=2)
+                        print(f"    [+] Detailed results saved to: {enhanced_output}")
+
+                    except json.JSONDecodeError:
+                        print("    [!] Failed to parse enhanced scan output")
+                else:
+                    if result.stderr:
+                        print(f"    [!] Enhanced scan error: {result.stderr[:200]}")
+
+            except subprocess.TimeoutExpired:
+                print("    [!] Enhanced scan timed out")
+            except Exception as e:
+                print(f"    [!] Enhanced scan failed: {e}")
+        else:
+            print("    [!] Enhanced scanner not found. Run: python scripts/enhanced_secret_scan.py --help")
 
     def decompile_bundle(self):
         """Decompile the Hermes bundle using available tools."""
@@ -671,12 +762,14 @@ Examples:
   %(prog)s target.ipa --output-dir ./out # Custom output directory
   %(prog)s target.ipa --extract-only     # Just extract IPA
   %(prog)s target.ipa --decompile        # Include decompilation
+  %(prog)s target.ipa --enhanced         # Include enhanced secret scanning
         """
     )
     parser.add_argument("ipa", help="Path to IPA file")
     parser.add_argument("--output-dir", "-o", help="Output directory")
     parser.add_argument("--extract-only", action="store_true", help="Only extract IPA contents")
     parser.add_argument("--decompile", action="store_true", help="Attempt to decompile Hermes bundle")
+    parser.add_argument("--enhanced", action="store_true", help="Run enhanced secret scanning (detects obfuscated secrets)")
 
     args = parser.parse_args()
 
@@ -685,7 +778,7 @@ Examples:
         sys.exit(1)
 
     analyzer = IPAAnalyzer(args.ipa, args.output_dir)
-    analyzer.run(extract_only=args.extract_only, decompile=args.decompile)
+    analyzer.run(extract_only=args.extract_only, decompile=args.decompile, enhanced=args.enhanced)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,18 @@
 # Large binaries - download separately
 frida-server*
 *.apk
+*.ipa
+
+# Test apps directory (downloaded APKs/IPAs for testing)
+test-apps/
+
+# Test app with builds (contains large APK files)
+hermes-test-app/builds/
+hermes-test-app/android/.gradle/
+hermes-test-app/android/app/build/
+hermes-test-app/ios/build/
+hermes-test-app/ios/Pods/
+hermes-test-app/node_modules/
 
 # Build artifacts
 hermes-skill.zip
