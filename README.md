@@ -59,6 +59,8 @@ hermes-skill/
 │   ├── analyze_apk.py        # Automated APK analysis
 │   ├── analyze_ipa.py        # Automated IPA analysis
 │   ├── analyze_bundle.py     # Hermes bundle analysis
+│   ├── sourcemap_recovery.py # Source map detection/extraction
+│   ├── detect_obfuscation.py # Obfuscation detection
 │   ├── extract_bundle.py     # Extract from APK/device
 │   ├── patch_and_repack.py   # Patch and rebuild APK
 │   ├── frida/
@@ -67,8 +69,12 @@ hermes-skill/
 │   │   ├── ios_ssl_bypass.js        # iOS SSL pinning bypass
 │   │   ├── ios_jailbreak_bypass.js  # iOS jailbreak detection bypass
 │   │   ├── gms_firebase_bypass.js   # GMS/Firebase bypass
+│   │   ├── rn_bridge_trace.js       # React Native bridge tracer
 │   │   ├── hermes_hooks.js          # React Native bridge hooks
 │   │   └── detect_frameworks.js     # Framework detection
+│   ├── traffic/
+│   │   ├── mitmproxy_capture.py     # Traffic capture addon
+│   │   └── correlate_traffic.py     # Traffic-bundle correlation
 │   └── maestro/
 │       └── *.yaml        # UI automation flows
 └── templates/
@@ -97,13 +103,16 @@ hermes-skill/
 - String and API endpoint extraction
 - JADX decompilation for Java/Kotlin code
 - iOS entitlements and privacy manifest analysis (iOS 17+)
+- Source map detection and extraction
+- Obfuscation detection (javascript-obfuscator, Metro, CFG flattening)
 - Secret scanning with gitleaks/trufflehog
 
 ### Dynamic Analysis
 - Frida scripts for SSL pinning bypass (40+ methods)
 - Root/jailbreak detection bypass
 - GMS/Firebase bypass for emulators
-- React Native bridge hooking
+- React Native bridge tracing (native module calls, keychain, crypto)
+- Traffic capture and bundle correlation
 - Maestro UI automation
 
 ### Platform-Specific
