@@ -3,17 +3,24 @@
 ## Application Info
 - Package: com.example.app
 - Version: X.X.X
-- Min SDK: XX, Target SDK: XX
+- Platform: Android / iOS
 - Framework: React Native with Hermes bytecode
 
+### Android-Specific
+- Min SDK: XX, Target SDK: XX
+
+### iOS-Specific
+- Deployment target: iOS XX
+- Architecture: arm64 / arm64 + x86_64
+
 ## Analysis Status
-- [ ] AndroidManifest.xml reviewed
-- [ ] JADX decompiled sources analyzed
+- [ ] Package extracted and inspected
 - [ ] Hermes bytecode analyzed
-- [ ] Secrets/credentials search
+- [ ] Configuration files reviewed (Manifest/Info.plist)
+- [ ] Secret/credential search (automated + manual triage)
 - [ ] Network security analysis
-- [ ] Native libraries analysis
-- [ ] Exported components tested
+- [ ] Native code analysis
+- [ ] Exported/URL scheme handlers tested
 - [ ] Traffic interception verified
 
 ---
@@ -23,7 +30,7 @@
 ### CRITICAL SEVERITY
 
 #### 1. [FINDING TITLE]
-**Location**: `path/to/file.java:line`
+**Location**: `path/to/file:line`
 
 **Description**:
 [What is vulnerable and why]
@@ -40,7 +47,7 @@
 **CVSS 3.1**: X.X (CRITICAL/HIGH/MEDIUM/LOW)
 
 **Remediation**:
-```java
+```
 // Fixed code example
 ```
 
@@ -79,9 +86,11 @@
 
 ## HARDCODED SECRETS
 
-| Secret | Value | Risk |
-|--------|-------|------|
-| API_KEY | `[REDACTED]` | HIGH/MEDIUM/LOW |
+| Secret | Value | Risk | Verified? |
+|--------|-------|------|-----------|
+| API_KEY | `[REDACTED]` | HIGH/MEDIUM/LOW | Yes/False Positive |
+
+**Note:** Automated scanners produce ~75% false positive rate on Hermes bundles. All findings above have been manually verified.
 
 ---
 
@@ -99,17 +108,18 @@
 ---
 
 ## FILES ANALYZED
-- AndroidManifest.xml
-- BuildConfig.java
+- AndroidManifest.xml / Info.plist
+- Hermes bundle (index.android.bundle / main.jsbundle)
 - [Other key files]
 
 ---
 
 ## TOOLS USED
-- JADX - APK decompilation
-- r2hermes - Hermes bytecode analysis
-- Burp Suite - Traffic interception
-- Frida - Runtime instrumentation
+- r2hermes / hermes-dec -- Hermes bytecode analysis
+- jadx / JADX (Android) -- APK decompilation
+- gitleaks + enhanced_secret_scan.py -- Secret scanning
+- Burp Suite / mitmproxy -- Traffic interception
+- Frida -- Runtime instrumentation
 
 ---
 

@@ -1,0 +1,75 @@
+name: Build Skill Packages
+
+on:
+  push:
+    branches: ['*']
+
+jobs:
+  create-release-zips:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create skill packages
+        run: |
+          python3 << 'EOF'
+          import zipfile
+          import os
+
+          def create_skill_zip(skill_md_src, output_zip):
+              with zipfile.ZipFile(output_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
+                  # Add SKILL.md (renamed from platform-specific file)
+                  zf.write(skill_md_src, 'SKILL.md')
+
+                  # Add shared methodology
+                  zf.write('SKILL-common.md', 'SKILL-common.md')
+
+                  # Add scripts
+                  for root, dirs, files in os.walk('scripts'):
+                      files = [f for f in files if not f.startswith('.') and not f.endswith('.pyc')]
+                      dirs[:] = [d for d in dirs if d != '__pycache__']
+                      for file in files:
+                          src_path = os.path.join(root, file)
+                          zf.write(src_path, src_path)
+
+                  # Add templates
+                  for root, dirs, files in os.walk('templates'):
+                      files = [f for f in files if not f.startswith('.')]
+                      for file in files:
+                          src_path = os.path.join(root, file)
+                          zf.write(src_path, src_path)
+
+          create_skill_zip('SKILL-android.md', 'hermes-android.zip')
+          print("Created hermes-android.zip")
+
+          create_skill_zip('SKILL-ios.md', 'hermes-ios.zip')
+          print("Created hermes-ios.zip")
+          EOF
+
+      - name: Verify packages
+        run: |
+          echo "Packages created:"
+          ls -lh hermes-*.zip
+          echo "--- Android contents ---"
+          unzip -l hermes-android.zip
+          echo "--- iOS contents ---"
+          unzip -l hermes-ios.zip
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-skills-${{ github.sha }}
+          path: |
+            hermes-android.zip
+            hermes-ios.zip
+          retention-days: 30
+
+# Note: The following files are NOT included in the packages:
+# - frida-server-* (download from https://github.com/frida/frida/releases)
+# - *.apk / *.ipa files (user-provided)
+# - README.md (repo documentation only)
+# - .git/ (version control)
+#
+# Users should download frida-server matching their device:
+# curl -sL "https://github.com/frida/frida/releases/download/VERSION/frida-server-VERSION-android-ARCH.xz" -o frida-server.xz
+# xz -d frida-server.xz

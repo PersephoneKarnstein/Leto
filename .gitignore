@@ -5,6 +5,7 @@ frida-server*
 
 # Test apps directory (downloaded APKs/IPAs for testing)
 test-apps/
+hermes-test-app/
 
 # Test app with builds (contains large APK files)
 hermes-test-app/builds/

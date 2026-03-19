@@ -8,17 +8,7 @@ description: Analyze Hermes bytecode in React Native Android apps. Disassemble, 
 Toolkit for reverse engineering React Native **Android** applications compiled with Meta's Hermes JavaScript engine.
 
 **For iOS analysis, see [SKILL-ios.md](SKILL-ios.md).**
-
----
-
-## Key Insight: Manual Verification Required
-
-> **Testing 13 real-world apps revealed a 75% false positive rate in automated secret detection.**
->
-> Common false positives: RSA PUBLIC keys (not private), JWT version manifests (not auth tokens),
-> asset identifier hashes, and bytecode noise patterns. Always manually verify findings before reporting.
->
-> See **Phase 9: Deep Analysis** for verification methodology.
+**For shared methodology (secret triage, r2hermes, deep analysis), see [SKILL-common.md](SKILL-common.md).**
 
 ---
 
@@ -37,7 +27,7 @@ file ./analysis/extracted/assets/index.android.bundle
 # 4. Decompile Java code
 jadx target.apk -d jadx_output/
 
-# 5. Check for secrets
+# 5. Check for secrets (gitleaks or betterleaks)
 gitleaks dir ./analysis/apktool/ -v
 
 # 6. Run with Frida
@@ -45,33 +35,21 @@ frida -U -f com.target.app -l scripts/frida/universal_ssl_bypass.js
 ```
 
 **Key files to check:**
-- `AndroidManifest.xml` - exported components, permissions
-- `BuildConfig.java` - API keys, debug flags
-- `res/xml/network_security_config.xml` - cleartext traffic, pinning
-- `assets/index.android.bundle` - Hermes bytecode
+- `AndroidManifest.xml` -- exported components, permissions
+- `BuildConfig.java` -- API keys, debug flags
+- `res/xml/network_security_config.xml` -- cleartext traffic, pinning
+- `assets/index.android.bundle` -- Hermes bytecode
 
 ---
 
-## Tool Ecosystem
+## Android-Specific Tools
 
 | Tool | Purpose | Install |
 |------|---------|---------|
-| **r2hermes** | Disassemble/decompile Hermes | `r2pm -ci r2hermes` |
-| **hermes-dec** | Decompile to JS (binary: `hbc-decompiler`) | `pip install git+https://github.com/P1sec/hermes-dec` |
-| **hbctool** | Disassemble/patch bytecode | `pip install hbctool` |
 | **jadx** | Decompile DEX to Java | `brew install jadx` |
 | **apktool** | Decode APK resources | `brew install apktool` |
-| **frida** | Runtime instrumentation | `pip install frida-tools` |
-| **objection** | APK patching, exploration | `pip install objection` |
-| **gitleaks** | Secret scanning | `brew install gitleaks` |
 
-### Version Compatibility
-
-| frida-tools | frida-server | Notes |
-|-------------|--------------|-------|
-| 17.6.2 | 17.5.0 | Recommended combo |
-
-**Note:** frida-tools 17.x has no `--no-pause` flag - app auto-resumes with `-f`.
+For shared tools (r2hermes, hermes-dec, frida, etc.), see [SKILL-common.md](SKILL-common.md#shared-tool-ecosystem).
 
 ---
 
@@ -82,8 +60,8 @@ frida -U -f com.target.app -l scripts/frida/universal_ssl_bypass.js
 ```bash
 # Check host architecture BEFORE downloading emulator images
 uname -m
-# arm64 → use arm64-v8a system images (Apple Silicon)
-# x86_64 → use x86_64 system images (Intel)
+# arm64 -> use arm64-v8a system images (Apple Silicon)
+# x86_64 -> use x86_64 system images (Intel)
 ```
 
 ### Phase 2: Obtain APK
@@ -120,160 +98,15 @@ cat jadx_output/sources/*/BuildConfig.java
 strings ./analysis/extracted/assets/index.android.bundle | grep -E '^https?://' | sort -u
 ```
 
-### Phase 5: Hermes Analysis
+### Phase 5: Hermes + Secret + Obfuscation Analysis
 
-```bash
-# Decompile with r2hermes
-r2 -qc 'pd:ha' index.android.bundle > decompiled.js
-
-# Extract strings
-r2 -qc 'iz~http' index.android.bundle
-
-# For large bundles (>20MB), use strings command instead
-strings index.android.bundle | grep -E 'api|endpoint|token'
-```
-
-### Phase 6: Enhanced Secret Scanning
-
-Basic string matching misses obfuscated secrets. Use the enhanced scanner:
-
-```bash
-# Run enhanced secret scan (detects obfuscated secrets)
-python scripts/enhanced_secret_scan.py index.android.bundle
-
-# Or run with full APK analysis
-python scripts/analyze_apk.py target.apk --enhanced
-```
-
-The enhanced scanner detects:
-- **Base64 encoded secrets** - decodes and checks for sensitive data
-- **Hex encoded secrets** - decodes hex strings
-- **Character code arrays** - detects `[65, 75, 73, ...]` patterns (AWS keys, etc.)
-- **Split string fragments** - finds `sk_test_`, `AKIA`, `ghp_` prefixes
-- **Anti-tampering indicators** - root detection, Frida detection, SSL pinning
-
-### Phase 7: Obfuscation Analysis
-
-```bash
-# Detect obfuscation techniques
-python scripts/detect_obfuscation.py target.apk
-
-# Common obfuscation patterns in Hermes bundles:
-# - String splitting with runtime concatenation
-# - Base64/hex encoding of secrets
-# - Character code arrays: [65,75,73,65,...] = "AKIA..."
-# - Control flow flattening (javascript-obfuscator)
-```
-
-**Obfuscation effectiveness (from testing):**
-
-| Technique | Detection Difficulty |
-|-----------|---------------------|
-| Direct strings | Easy - simple grep |
-| Base64 encoding | Easy - decode and scan |
-| Hex encoding | Easy - decode and scan |
-| String splitting | Medium - fragments visible |
-| Char code arrays | Hard - may be optimized away |
-| Native storage | Very Hard - requires Frida |
-
-### Phase 8: Anti-Tampering Detection
-
-Apps may include protections that affect analysis:
-
-```bash
-# Check for anti-tampering code in bundle
-strings index.android.bundle | grep -iE 'checkRoot|frida|jailbreak|emulator|integrity'
-
-# Common anti-tampering indicators:
-# - checkRootStatus, isRooted, RootBeer
-# - checkFrida, frida-server, frida-agent
-# - checkDebugger, isDebuggerAttached
-# - checkEmulator, goldfish, ranchu
-# - SSL_PINS, certificatePinning
-```
-
-**Bypassing anti-tampering:**
-```bash
-# Use root bypass Frida script
-frida -U -f com.target.app -l scripts/frida/root_bypass.js
-
-# Combined bypass for stubborn apps
-cat scripts/frida/universal_ssl_bypass.js \
-    scripts/frida/root_bypass.js \
-    scripts/frida/gms_firebase_bypass.js > /tmp/all.js
-frida -U -f com.target.app -l /tmp/all.js
-```
-
-### Phase 9: Deep Analysis (Manual Verification)
-
-**CRITICAL: Automated scanners produce ~75% false positive rate.** Always manually verify findings.
-
-#### RSA Key Analysis
-
-```bash
-# Search for RSA keys in bundle
-strings index.android.bundle | grep -E "RSA|BEGIN.*KEY|END.*KEY"
-
-# IMPORTANT: Distinguish PUBLIC vs PRIVATE
-# - "RSA PUBLIC KEY" or "PUBLIC KEY" = SAFE (expected for signature verification)
-# - "RSA PRIVATE KEY" or "PRIVATE KEY" = CRITICAL (should never be in client)
-
-# Check full context around matches
-strings index.android.bundle | grep -B2 -A2 "RSA"
-```
-
-#### JWT Token Analysis
-
-```bash
-# Find JWT tokens (eyJ... format)
-strings index.android.bundle | grep -oE 'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'
-
-# Decode JWT payload to determine purpose
-JWT="eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJwYXlsb2FkIjoiZGF0YSJ9.sig"
-echo "$JWT" | cut -d. -f2 | base64 -d 2>/dev/null
-
-# JWT Classification:
-# - Auth tokens: contain user_id, exp, iat, scopes → SENSITIVE
-# - Version manifests: contain version, timestamp, messages → NOT SENSITIVE
-# - Config tokens: contain feature flags, settings → REVIEW CONTEXT
-```
-
-#### Hash Pattern Analysis
-
-```bash
-# Many MD5/SHA256 matches are NOT secrets
-# Common false positives:
-# - Asset/font identifiers
-# - File integrity hashes
-# - Cache keys
-
-# Check context around hash patterns
-strings index.android.bundle | grep -oE '[a-f0-9]{32}' | head -10
-# If surrounded by asset names, font data, or config → likely NOT a secret
-```
-
-#### Firebase/Google API Key Verification
-
-```bash
-# Firebase keys (AIza...) are often safe if properly restricted
-# Check if key has API restrictions in Firebase console
-
-# Extract Firebase keys
-strings index.android.bundle | grep -oE 'AIza[A-Za-z0-9_-]{35}'
-
-# Verify: Keys should be restricted to specific APIs and app signatures
-# Unrestricted keys in production builds = vulnerability
-```
-
-#### False Positive Checklist
-
-| Pattern | Usually False Positive? | How to Verify |
-|---------|------------------------|---------------|
-| `RSA` | Often (check for PUBLIC) | Full context shows "PUBLIC KEY" |
-| `eyJ...` JWT | Sometimes | Decode payload - check for auth claims |
-| MD5/SHA256 hash | Usually | Check surrounding context (asset IDs) |
-| `SG.` prefix | Often | Bytecode noise - check for full key format |
-| Base64 strings | Often | Decode - usually config/asset data |
+See [SKILL-common.md](SKILL-common.md) for:
+- [r2hermes commands](SKILL-common.md#r2hermes-commands)
+- [Enhanced secret scanning](SKILL-common.md#enhanced-secret-scanning)
+- [Obfuscation analysis](SKILL-common.md#obfuscation-analysis)
+- [Deep analysis / false positive triage](SKILL-common.md#deep-analysis-manual-verification)
+- [Source map recovery](SKILL-common.md#source-map-recovery)
+- [Traffic capture and correlation](SKILL-common.md#traffic-capture-and-correlation)
 
 ---
 
@@ -298,14 +131,20 @@ avdmanager create avd -n pentest_api30 -k "system-images;android-30;google_apis;
 emulator -avd pentest_api30 -writable-system &
 ```
 
+**Emulator trade-offs:**
+- `google_apis` images: allow root/Frida but NO Google Play Services
+- `google_apis_playstore` images: have Play Services but locked, no root
+- Apps depending on Firebase/GMS show black screens on pentest emulators
+- **Solution**: Patch APK with Objection: `objection patchapk -s target.apk`
+
 ### Install Frida Server
 
 ```bash
 # Check device architecture
 adb shell getprop ro.product.cpu.abi  # arm64-v8a, x86_64, etc.
 
-# Download matching frida-server
-curl -sL "https://github.com/frida/frida/releases/download/17.5.0/frida-server-17.5.0-android-arm64.xz" -o /tmp/frida-server.xz
+# Download matching frida-server (use current version)
+curl -sL "https://github.com/frida/frida/releases/download/17.8.0/frida-server-17.8.0-android-arm64.xz" -o /tmp/frida-server.xz
 xz -d /tmp/frida-server.xz
 
 # Push and start
@@ -334,11 +173,14 @@ frida -U -f com.target.app -l scripts/frida/root_bypass.js
 # GMS/Firebase bypass (for non-Play Store emulators)
 frida -U -f com.target.app -l scripts/frida/gms_firebase_bypass.js
 
-# Combined
+# Combined bypass
 cat scripts/frida/universal_ssl_bypass.js \
     scripts/frida/root_bypass.js \
     scripts/frida/gms_firebase_bypass.js > /tmp/all_bypasses.js
 frida -U -f com.target.app -l /tmp/all_bypasses.js
+
+# React Native bridge tracing
+frida -U -f com.target.app -l scripts/frida/rn_bridge_trace.js
 ```
 
 **Note:** Some hooks may fail on specific apps due to different class structures. Check error output and adapt.
@@ -412,69 +254,7 @@ apksigner sign --ks debug.keystore aligned.apk
 
 ---
 
-## r2hermes Commands
-
-```bash
-# Get bundle info
-r2 -qc 'pd:hi' bundle.hbc
-
-# Decompile all functions
-r2 -qc 'pd:ha' bundle.hbc > all.js
-
-# Decompile specific function
-r2 -qc 'pd:hf 123' bundle.hbc
-
-# Search strings
-r2 -qc 'iz~api' bundle.hbc
-
-# Fix hash after patching
-r2 -wqc '.(fix-hbc)' bundle.hbc
-```
-
----
-
 ## Troubleshooting
-
-### Hermes version detection issues
-
-The `analyze_apk.py` script may sometimes report incorrect versions. **Always verify with `file` command:**
-```bash
-file index.android.bundle
-# Output: Hermes JavaScript bytecode, version 96
-```
-
-The `file` command is the most reliable method for version detection.
-
-### r2hermes fails on large bundles
-
-Use `strings` for extraction:
-```bash
-strings index.android.bundle | grep -E '^https?://'
-```
-
-For enhanced analysis on large bundles:
-```bash
-python scripts/enhanced_secret_scan.py index.android.bundle --json
-```
-
-### Secrets not detected (obfuscation)
-
-If standard scanning misses secrets, they may be obfuscated:
-
-```bash
-# Check for Base64 encoded secrets
-strings bundle | grep -oE '[A-Za-z0-9+/]{20,}={0,2}' | while read b64; do
-  echo "$b64" | base64 -d 2>/dev/null | grep -q 'api\|key\|secret' && echo "Found: $b64"
-done
-
-# Check for hex encoded secrets
-strings bundle | grep -oE '[0-9a-fA-F]{40,}' | while read hex; do
-  echo "$hex" | xxd -r -p 2>/dev/null
-done
-
-# Use enhanced scanner for comprehensive detection
-python scripts/enhanced_secret_scan.py bundle --category base64
-```
 
 ### App stuck on splash (GMS dependency)
 
@@ -497,80 +277,28 @@ Java.perform(function() {
 });
 ```
 
-### Secret scanner false positives
-
-**Testing showed ~75% false positive rate on automated secret detection.** Common false positives:
-
-| False Positive Type | Example | How to Identify |
-|---------------------|---------|-----------------|
-| Unicode emoji sequences | `1F471-1F3FC-200D-2640-FE0F` | Hex pattern but emoji code |
-| Build verification tokens | Sentry DSN, build hashes | Check vendor documentation |
-| RSA PUBLIC keys | `BEGIN RSA PUBLIC KEY` | Safe - used for verification |
-| Version manifest JWTs | JWT with `versions`, `timestamp` | Decode payload to check |
-| Asset identifiers | MD5 hashes of fonts/images | Surrounded by asset names |
-| Bytecode noise | `SG.` in garbled context | Check for complete key format |
-
-**Deep analysis workflow:**
-1. Run automated scanner
-2. For each finding, check full context (surrounding 50+ chars)
-3. Decode encoded values (Base64, JWT)
-4. Classify: AUTH SECRET vs CONFIG vs FALSE POSITIVE
-5. Only report confirmed secrets
+For shared troubleshooting (Hermes version detection, large bundles, obfuscated secrets), see [SKILL-common.md](SKILL-common.md#hermes-version-detection).
 
 ---
 
 ## Security Checklist
 
 ### Static Analysis
-- [ ] `AndroidManifest.xml` - exported components, allowBackup
-- [ ] `network_security_config.xml` - cleartext traffic, cert pinning
-- [ ] `BuildConfig.java` - API keys, debug flags
-- [ ] `strings.xml` - hardcoded secrets
-- [ ] Hermes bundle - API endpoints, tokens
-- [ ] Deep link handlers - intent injection
-- [ ] WebView usage - JavaScript interfaces
+- [ ] `AndroidManifest.xml` -- exported components, allowBackup
+- [ ] `network_security_config.xml` -- cleartext traffic, cert pinning
+- [ ] `BuildConfig.java` -- API keys, debug flags
+- [ ] `strings.xml` -- hardcoded secrets
+- [ ] Hermes bundle -- API endpoints, tokens
+- [ ] Deep link handlers -- intent injection
+- [ ] WebView usage -- JavaScript interfaces
 
-### Secret Scanning
-- [ ] Run basic secret scanner (gitleaks)
-- [ ] Run enhanced secret scanner (detects obfuscated secrets)
-- [ ] **Manually verify all findings** (75% are false positives)
-- [ ] Check RSA keys: PUBLIC vs PRIVATE
-- [ ] Decode JWT tokens: auth vs config vs version manifest
-- [ ] Verify hash patterns: secrets vs asset identifiers
-- [ ] Check Firebase keys for API restrictions
-
-### Anti-Tampering
-- [ ] Check for root detection (RootBeer, isRooted)
-- [ ] Check for Frida detection
-- [ ] Check for emulator detection
-- [ ] Identify bypass requirements
+### Secret & Obfuscation Analysis
+- [ ] Run gitleaks/betterleaks + enhanced scanner
+- [ ] Run obfuscation detector
+- [ ] **Manually verify all findings** ([false positive triage](SKILL-common.md#false-positive-checklist))
 
 ### Dynamic Analysis
 - [ ] Test on rooted emulator with Frida
 - [ ] Bypass SSL pinning and root detection
-- [ ] Intercept traffic with Burp Suite
-
----
-
-## Platform Differences
-
-| Aspect | Android | iOS |
-|--------|---------|-----|
-| Bundle file | `assets/index.android.bundle` | `main.jsbundle` |
-| Package format | APK (zip) | IPA (zip) |
-| Root access | Rooted emulator | Jailbroken device |
-| Dynamic instrumentation | Frida + frida-server | Frida + jailbreak or gadget |
-| Emulation | Android Emulator (full) | iOS Simulator (limited) |
-| Analysis script | `analyze_apk.py` | `analyze_ipa.py` |
-| Tool checker | `check_tools.py` | `check_tools_ios.py` |
-
----
-
-## References
-
-- [OWASP MASTG - Android](https://mas.owasp.org/MASTG/)
-- [Frida Android](https://frida.re/docs/android/)
-- [Frida Codeshare](https://codeshare.frida.re/)
-- [Hermes GitHub](https://github.com/facebook/hermes)
-- [hermes-dec](https://github.com/nickcopi/hermes-dec)
-- [Maestro](https://maestro.mobile.dev/)
+- [ ] Intercept traffic with Burp Suite / mitmproxy
+- [ ] Run bridge tracer for sensitive operations
