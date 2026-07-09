@@ -125,3 +125,42 @@ def apply_renames(js_text: str, funcs: list, renames: list) -> str:
     global_mapping = {r.original: r.suggested for r in global_renames}
     pieces = _apply_map(pieces, global_mapping)
     return pieces
+
+
+def reconcile(renames: list) -> list:
+    """Reconcile name collisions within each scope.
+
+    Deterministically disambiguates duplicate suggested names within the same scope
+    by appending _2, _3, etc to lower-confidence duplicates. Processes renames sorted
+    by (scope, -confidence, original) to ensure deterministic ordering.
+    """
+    used = {}   # scope -> set of taken names
+    out = []
+    for r in sorted(renames, key=lambda x: (x.scope, -x.confidence, x.original)):
+        taken = used.setdefault(r.scope, set())
+        name = r.suggested
+        if name in taken:
+            i = 2
+            while "%s_%d" % (name, i) in taken:
+                i += 1
+            name = "%s_%d" % (name, i)
+        taken.add(name)
+        out.append(Rename(r.scope, r.original, name, r.confidence))
+    return out
+
+
+def to_map_dict(source: str, model: str, renames: list) -> dict:
+    """Convert renames to the rename-map JSON schema dict.
+
+    Schema: {"source": "<file>", "model": "<model>",
+             "renames": [{"scope": "...", "original": "...", "suggested": "...", "confidence": 0.0}]}
+    """
+    return {
+        "source": source,
+        "model": model,
+        "renames": [
+            {"scope": r.scope, "original": r.original,
+             "suggested": r.suggested, "confidence": r.confidence}
+            for r in renames
+        ],
+    }

@@ -73,3 +73,29 @@ def test_apply_renames_no_intra_scope_collapse():
     assert "var finalName = 1" in out, "Original r2 should be renamed to finalName"
     # Make sure we have both distinct names
     assert "return r2 + finalName" in out, "Both registers should appear with correct final names"
+
+
+def test_reconcile_disambiguates_within_scope():
+    renames = [
+        air.Rename("global", "a", "handler", 0.9),
+        air.Rename("global", "b", "handler", 0.8),   # collide -> handler_2
+        air.Rename("fn#1", "r0", "value", 0.7),
+        air.Rename("fn#1", "r1", "value", 0.6),        # collide -> value_2
+        air.Rename("fn#2", "r0", "value", 0.7),        # different scope: OK, stays 'value'
+    ]
+    out = {(r.scope, r.original): r.suggested for r in air.reconcile(renames)}
+    assert out[("global", "a")] == "handler"
+    assert out[("global", "b")] == "handler_2"
+    assert out[("fn#1", "r0")] == "value"
+    assert out[("fn#1", "r1")] == "value_2"
+    assert out[("fn#2", "r0")] == "value"
+
+
+def test_to_map_dict_schema():
+    d = air.to_map_dict("bundle.js", "qwen3-coder:30b",
+                        [air.Rename("global", "fetchData", "login", 0.9)])
+    assert d["source"] == "bundle.js"
+    assert d["model"] == "qwen3-coder:30b"
+    assert d["renames"] == [
+        {"scope": "global", "original": "fetchData", "suggested": "login", "confidence": 0.9}
+    ]
