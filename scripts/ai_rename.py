@@ -5,6 +5,7 @@ Consumes decompiled Hermes JS (hbc-decompiler output, or a raw bundle which is
 auto-decompiled) and uses a local ollama model to produce meaningful, whole-
 program-consistent names. See SKILL-common.md "AI-Assisted Renaming".
 """
+import argparse
 import hashlib
 import json
 import os
@@ -379,3 +380,74 @@ def select_functions(funcs, function=None, depth=1, id_range=None,
     else:
         chosen = [f for f in funcs if f.strings]
     return chosen[:limit] if limit else chosen
+
+
+def run_rename(js_text, source, model, url, temperature, selection_kwargs,
+               cache_dir=None, query=query_ollama, progress=None):
+    funcs = collect_functions(js_text)
+    selected = select_functions(funcs, **selection_kwargs)
+    all_renames = []
+    for i, func in enumerate(selected):
+        if progress:
+            progress(i + 1, len(selected), func.name or scope_id(func))
+        key = cache_key(func, model) if cache_dir else None
+        cached = cache_load(cache_dir, key) if cache_dir else None
+        if cached is not None:
+            all_renames.extend(cached)
+            continue
+        try:
+            rs = suggest_names(func, model, url, temperature, query=query)
+        except OllamaError as e:
+            sys.stderr.write("skip %s: %s\n" % (func.name or scope_id(func), e))
+            rs = []
+        if cache_dir:
+            cache_store(cache_dir, key, rs)
+        all_renames.extend(rs)
+    reconciled = reconcile(all_renames)
+    out_js = apply_renames(js_text, funcs, reconciled)
+    return to_map_dict(source, model, reconciled), out_js
+
+
+def main():
+    p = argparse.ArgumentParser(description="AI-assisted Hermes identifier renaming")
+    p.add_argument("input", help="Decompiled .js OR a Hermes bundle (auto-decompiled)")
+    p.add_argument("-o", "--output", default="rename_out", help="Output directory")
+    p.add_argument("--model", default="qwen3-coder:30b")
+    p.add_argument("--ollama-url", default="localhost:11434")
+    p.add_argument("--temperature", type=float, default=0.15)
+    p.add_argument("--function", help="Rename this function name + its callees")
+    p.add_argument("--depth", type=int, default=1)
+    p.add_argument("--range", dest="id_range", help="Function index range, e.g. 100-140")
+    p.add_argument("--all", action="store_true", help="Rename every function")
+    p.add_argument("--limit", type=int)
+    p.add_argument("--dry-run", action="store_true", help="Write map only, no renamed.js")
+    p.add_argument("--no-cache", action="store_true")
+    args = p.parse_args()
+
+    js_text = load_decompiled(args.input)
+    id_range = None
+    if args.id_range:
+        lo, hi = args.id_range.split("-")
+        id_range = (int(lo), int(hi))
+    selection = {"function": args.function, "depth": args.depth,
+                 "id_range": id_range, "all_": args.all, "limit": args.limit}
+    os.makedirs(args.output, exist_ok=True)
+    cache_dir = None if args.no_cache else os.path.join(args.output, "cache")
+
+    def progress(n, total, label):
+        sys.stderr.write("[%d/%d] %s\n" % (n, total, label))
+
+    map_dict, out_js = run_rename(
+        js_text, os.path.basename(args.input), args.model, args.ollama_url,
+        args.temperature, selection, cache_dir=cache_dir, progress=progress)
+
+    with open(os.path.join(args.output, "rename-map.json"), "w") as f:
+        json.dump(map_dict, f, indent=2)
+    if not args.dry_run:
+        with open(os.path.join(args.output, "renamed.js"), "w") as f:
+            f.write(out_js)
+    sys.stderr.write("Wrote %d renames to %s\n" % (len(map_dict["renames"]), args.output))
+
+
+if __name__ == "__main__":
+    main()

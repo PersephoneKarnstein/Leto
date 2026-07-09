@@ -300,6 +300,41 @@ def test_cache_load_schema_drift_returns_none(tmp_path):
     assert result is None
 
 
+def test_run_rename_end_to_end_mocked(tmp_path):
+    js = FIX.read_text()
+    responses = {
+        "fetchData": _json.dumps({
+            "function": {"name": "fetchLoginSession", "confidence": 0.9},
+            "registers": {"r2": {"name": "authToken", "confidence": 0.8}}}),
+        "global": _json.dumps({
+            "function": {"name": "global", "confidence": 0.0},
+            "registers": {"r2": {"name": "loginUrl", "confidence": 0.7}}}),
+    }
+    def fake_query(prompt, model, url, temperature, timeout=180):
+        for name, resp in responses.items():
+            if ("function " + name + "(") in prompt:
+                return resp
+        return _json.dumps({"function": {}, "registers": {}})
+    map_dict, out_js = air.run_rename(
+        js, "bundle.js", "m", "u", 0.15,
+        selection_kwargs={},  # default: strings-only -> global + fetchData
+        cache_dir=str(tmp_path / "cache"), query=fake_query)
+    assert "function fetchLoginSession(" in out_js
+    # global's own r2 is renamed to loginUrl throughout its scope (definition AND
+    # call site use), consistent with scope-wide substitution semantics already
+    # verified by test_apply_renames_no_intra_scope_collapse.
+    assert "r3 = fetchLoginSession(r0, loginUrl)" in out_js  # call site updated
+    assert "authToken = r0['token']" in out_js               # fetchData r2
+    assert 'loginUrl = "https://api.example.com/login"' in out_js  # global r2
+    pairs = {(r["scope"], r["original"]): r["suggested"] for r in map_dict["renames"]}
+    assert pairs[("global", "fetchData")] == "fetchLoginSession"
+    # second run must hit cache (no query calls)
+    def boom(*a, **k):
+        raise AssertionError("should be cached")
+    air.run_rename(js, "bundle.js", "m", "u", 0.15, selection_kwargs={},
+                   cache_dir=str(tmp_path / "cache"), query=boom)
+
+
 def test_cache_store_atomic_roundtrip(tmp_path):
     """Regression: cache_store must write atomically with no .tmp leftover."""
     key = "test_atomic"
