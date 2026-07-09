@@ -118,6 +118,7 @@ hermes-skill/
 - Source map detection and extraction
 - Obfuscation detection (javascript-obfuscator, Metro, CFG flattening)
 - Secret scanning with gitleaks/trufflehog
+- **AI-assisted renaming** — local LLM (ollama + qwen3-coder) renames decompiled Hermes identifiers, whole-program-consistent, no paid context
 
 ### Dynamic Analysis
 - Frida scripts for SSL pinning bypass (40+ methods)

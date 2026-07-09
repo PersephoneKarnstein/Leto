@@ -107,6 +107,7 @@ See [SKILL-common.md](SKILL-common.md) for:
 - [Deep analysis / false positive triage](SKILL-common.md#deep-analysis-manual-verification)
 - [Source map recovery](SKILL-common.md#source-map-recovery)
 - [Traffic capture and correlation](SKILL-common.md#traffic-capture-and-correlation)
+- [AI-assisted renaming](SKILL-common.md#ai-assisted-renaming) — local-LLM identifier renaming for decompiled output
 
 ---
 

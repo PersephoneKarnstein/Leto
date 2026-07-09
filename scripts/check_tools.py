@@ -163,6 +163,15 @@ TOOLS = {
         "required_for": ["AI-assisted reverse engineering", "automated analysis"],
         "optional": True,
     },
+    "ollama": {
+        "check_cmd": ["ollama", "--version"],
+        "install": {
+            "macos": "brew install ollama  # then: ollama pull qwen3-coder:30b",
+            "linux": "curl -fsSL https://ollama.com/install.sh | sh  # then: ollama pull qwen3-coder:30b",
+        },
+        "required_for": ["AI-assisted renaming (ai_rename.py)"],
+        "optional": True,
+    },
     "adb": {
         "check_cmd": ["adb", "version"],
         "install": {
