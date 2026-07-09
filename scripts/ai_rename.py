@@ -5,7 +5,9 @@ Consumes decompiled Hermes JS (hbc-decompiler output, or a raw bundle which is
 auto-decompiled) and uses a local ollama model to produce meaningful, whole-
 program-consistent names. See SKILL-common.md "AI-Assisted Renaming".
 """
+import hashlib
 import json
+import os
 import re
 import struct
 import subprocess
@@ -97,6 +99,42 @@ def collect_functions(js_text: str) -> list:
 
 def scope_id(func) -> str:
     return "fn#%d" % func.index
+
+
+def cache_key(func, model: str) -> str:
+    """Generate a deterministic cache key for a function and model.
+
+    Returns SHA256 hex digest (64 chars) of func.body + model + PROMPT_VERSION.
+    """
+    h = hashlib.sha256()
+    h.update(func.body.encode())
+    h.update(model.encode())
+    h.update(PROMPT_VERSION.encode())
+    return h.hexdigest()
+
+
+def cache_load(cache_dir: str, key: str):
+    """Load cached renames from a JSON file.
+
+    Returns list of Rename objects if file exists, None otherwise.
+    """
+    path = os.path.join(cache_dir, key + ".json")
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        data = json.load(f)
+    return [Rename(**r) for r in data]
+
+
+def cache_store(cache_dir: str, key: str, renames: list) -> None:
+    """Store renames to a JSON cache file.
+
+    Creates cache_dir if needed and writes renames as JSON list of dicts.
+    """
+    os.makedirs(cache_dir, exist_ok=True)
+    path = os.path.join(cache_dir, key + ".json")
+    with open(path, "w") as f:
+        json.dump([r.__dict__ for r in renames], f)
 
 
 def _apply_map(text: str, mapping: dict) -> str:

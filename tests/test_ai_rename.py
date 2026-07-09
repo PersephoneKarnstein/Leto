@@ -253,3 +253,16 @@ def test_load_decompiled_raises_on_decompiler_failure(tmp_path):
 
     with pytest.raises(air.DecompileError):
         air.load_decompiled(str(bundle), run=fake_run)
+
+
+def test_cache_roundtrip_and_key_sensitivity(tmp_path):
+    funcs = air.collect_functions(FIX.read_text())
+    f = funcs[1]
+    k1 = air.cache_key(f, "qwen3-coder:30b")
+    k2 = air.cache_key(f, "other-model")
+    assert k1 != k2 and len(k1) == 64
+    assert air.cache_load(str(tmp_path), k1) is None
+    rs = [air.Rename("global", "fetchData", "login", 0.9)]
+    air.cache_store(str(tmp_path), k1, rs)
+    loaded = air.cache_load(str(tmp_path), k1)
+    assert loaded == rs
