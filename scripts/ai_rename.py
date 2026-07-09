@@ -29,6 +29,14 @@ class Function:
     callees: list = field(default_factory=list)
 
 
+@dataclass
+class Rename:
+    scope: str
+    original: str
+    suggested: str
+    confidence: float
+
+
 def _match_block(text: str, open_brace_pos: int) -> int:
     """Return index just past the matching '}' for the '{' at open_brace_pos."""
     depth = 0
@@ -68,3 +76,37 @@ def collect_functions(js_text: str) -> list:
         })
         funcs.append(Function(idx, name, span, body, registers, strings, callees))
     return funcs
+
+
+def scope_id(func) -> str:
+    return "fn#%d" % func.index
+
+
+def _sub_token(text: str, original: str, suggested: str) -> str:
+    return re.sub(r"(?<![\w$])" + re.escape(original) + r"(?![\w$])", suggested, text)
+
+
+def apply_renames(js_text: str, funcs: list, renames: list) -> str:
+    by_scope = {}
+    global_renames = []
+    for r in renames:
+        if r.scope == "global":
+            global_renames.append(r)
+        else:
+            by_scope.setdefault(r.scope, []).append(r)
+    # Apply per-function renames inside spans, working right-to-left so earlier
+    # spans' offsets stay valid.
+    pieces = js_text
+    for func in sorted(funcs, key=lambda f: f.span[0], reverse=True):
+        local = by_scope.get(scope_id(func))
+        if not local:
+            continue
+        start, end = func.span
+        block = pieces[start:end]
+        for r in local:
+            block = _sub_token(block, r.original, r.suggested)
+        pieces = pieces[:start] + block + pieces[end:]
+    # Global (function-name) renames apply across the whole file.
+    for r in global_renames:
+        pieces = _sub_token(pieces, r.original, r.suggested)
+    return pieces
