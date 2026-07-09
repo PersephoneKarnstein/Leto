@@ -1,6 +1,7 @@
 import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 import ai_rename as air
+import json as _json
 
 FIX = pathlib.Path(__file__).parent / "fixtures" / "decompiled_sample.js"
 
@@ -99,3 +100,32 @@ def test_to_map_dict_schema():
     assert d["renames"] == [
         {"scope": "global", "original": "fetchData", "suggested": "login", "confidence": 0.9}
     ]
+
+
+def test_suggest_names_parses_model_json():
+    funcs = air.collect_functions(FIX.read_text())
+    fetch = funcs[1]  # fetchData, scope fn#1
+    fake_response = _json.dumps({
+        "function": {"name": "fetchLoginSession", "confidence": 0.9},
+        "registers": {"r2": {"name": "authToken", "confidence": 0.8}},
+    })
+    calls = []
+    def fake_query(prompt, model, url, temperature, timeout=180):
+        calls.append(prompt)
+        return fake_response
+    out = air.suggest_names(fetch, "m", "u", 0.15, query=fake_query)
+    got = {(r.scope, r.original): (r.suggested, r.confidence) for r in out}
+    assert got[("global", "fetchData")] == ("fetchLoginSession", 0.9)
+    assert got[("fn#1", "r2")] == ("authToken", 0.8)
+    assert "fetchData" in calls[0]  # prompt includes the function body
+
+
+def test_suggest_names_retries_then_gives_up():
+    funcs = air.collect_functions(FIX.read_text())
+    attempts = []
+    def bad_query(prompt, model, url, temperature, timeout=180):
+        attempts.append(1)
+        return "not json{"
+    out = air.suggest_names(funcs[2], "m", "u", 0.15, query=bad_query)
+    assert out == []
+    assert len(attempts) == 2  # one retry

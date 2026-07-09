@@ -5,7 +5,9 @@ Consumes decompiled Hermes JS (hbc-decompiler output, or a raw bundle which is
 auto-decompiled) and uses a local ollama model to produce meaningful, whole-
 program-consistent names. See SKILL-common.md "AI-Assisted Renaming".
 """
+import json
 import re
+import urllib.request
 from dataclasses import dataclass, field
 
 PROMPT_VERSION = "1"
@@ -164,3 +166,59 @@ def to_map_dict(source: str, model: str, renames: list) -> dict:
             for r in renames
         ],
     }
+
+
+class OllamaError(RuntimeError):
+    pass
+
+
+def build_prompt(func) -> str:
+    hints = ", ".join(func.strings[:20]) or "(none)"
+    return (
+        "You are reverse-engineering decompiled Hermes (React Native) JavaScript.\n"
+        "Suggest concise, meaningful camelCase names for the function and its r<N> "
+        "registers, based on behaviour and string constants.\n"
+        "Respond ONLY with JSON of the form:\n"
+        '{"function": {"name": "...", "confidence": 0.0}, '
+        '"registers": {"r0": {"name": "...", "confidence": 0.0}}}\n'
+        "Use the ORIGINAL name if it is already meaningful (confidence 0).\n"
+        "String constants in scope: " + hints + "\n\n"
+        "Code:\n" + func.body + "\n"
+    )
+
+
+def query_ollama(prompt, model, url, temperature, timeout=180) -> str:
+    endpoint = "http://%s/api/generate" % url if "://" not in url else url + "/api/generate"
+    payload = json.dumps({
+        "model": model, "prompt": prompt, "stream": False,
+        "format": "json", "options": {"temperature": temperature},
+    }).encode()
+    req = urllib.request.Request(endpoint, data=payload,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode()).get("response", "")
+    except Exception as e:  # transport/HTTP/JSON-envelope failure
+        raise OllamaError(str(e))
+
+
+def suggest_names(func, model, url, temperature, query=query_ollama) -> list:
+    prompt = build_prompt(func)
+    for attempt in range(2):
+        raw = query(prompt, model, url, temperature)
+        try:
+            data = json.loads(raw)
+            break
+        except (json.JSONDecodeError, TypeError):
+            if attempt == 1:
+                return []
+    renames = []
+    fn = data.get("function") or {}
+    if func.name and fn.get("name") and fn["name"] != func.name:
+        renames.append(Rename("global", func.name, fn["name"],
+                              float(fn.get("confidence", 0.0))))
+    for reg, info in (data.get("registers") or {}).items():
+        if reg in func.registers and info.get("name") and info["name"] != reg:
+            renames.append(Rename(scope_id(func), reg, info["name"],
+                                  float(info.get("confidence", 0.0))))
+    return renames
