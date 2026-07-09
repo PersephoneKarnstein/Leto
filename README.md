@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="hermes-to-leto.svg" />
+</p>
+
 # Hermes Bytecode Analysis Skills
 
 **Comprehensive penetration testing toolkit** for React Native applications compiled with Hermes. Available as two separate skills for Android and iOS.
