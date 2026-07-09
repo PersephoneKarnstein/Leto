@@ -187,6 +187,10 @@ class OllamaError(RuntimeError):
     pass
 
 
+class DecompileError(RuntimeError):
+    pass
+
+
 def build_prompt(func) -> str:
     hints = ", ".join(func.strings[:20]) or "(none)"
     return (
@@ -256,8 +260,14 @@ def suggest_names(func, model, url, temperature, query=query_ollama) -> list:
 def is_hermes_bundle(path: str) -> bool:
     try:
         with open(path, "rb") as f:
-            magic = f.read(4)
-        return magic in (b"\xc6\x1f\xbc\x03", b"\x1f\xc6\x03\xbc")
+            header = f.read(64)
+        magic = header[:4]
+        if magic in (b"\xc6\x1f\xbc\x03", b"\x1f\xc6\x03\xbc"):
+            return True
+        # Mirrors analyze_bundle.py:read_hermes_header's secondary fallback:
+        # some bundles carry a "Hermes" signature in the header without the
+        # exact magic bytes matching.
+        return b"Hermes" in header
     except OSError:
         return False
 
@@ -267,7 +277,7 @@ def load_decompiled(path: str, run=subprocess.run) -> str:
         proc = run(["hbc-decompiler", path, "/dev/stdout"],
                    capture_output=True, text=True, timeout=1800)
         if proc.returncode != 0:
-            raise OllamaError("hbc-decompiler failed: " + (proc.stderr or "")[:200])
+            raise DecompileError("hbc-decompiler failed: " + (proc.stderr or "")[:200])
         return proc.stdout
     with open(path, "r", errors="ignore") as f:
         return f.read()
@@ -287,6 +297,8 @@ def select_functions(funcs, function=None, depth=1, id_range=None,
         # the loop ends before they're ever visited.
         seen = {function}
         frontier = [function]
+        # depth is clamped to >= 1: there is no "zero-hop" mode, a call to
+        # select_functions(function=...) always expands at least one hop.
         for _ in range(max(depth, 1)):
             nxt = []
             for nm in frontier:

@@ -1,7 +1,8 @@
-import sys, pathlib
+import sys, pathlib, types
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 import ai_rename as air
 import json as _json
+import pytest
 
 FIX = pathlib.Path(__file__).parent / "fixtures" / "decompiled_sample.js"
 
@@ -206,3 +207,49 @@ def test_select_all_and_limit():
     funcs = air.collect_functions(FIX.read_text())
     assert len(air.select_functions(funcs, all_=True)) == 3
     assert len(air.select_functions(funcs, all_=True, limit=2)) == 2
+
+
+def test_is_hermes_bundle_detects_magic(tmp_path):
+    bundle = tmp_path / "index.android.bundle"
+    bundle.write_bytes(b"\xc6\x1f\xbc\x03" + b"\x00" * 60)
+    assert air.is_hermes_bundle(str(bundle)) is True
+
+    plain = tmp_path / "plain.js"
+    plain.write_text("function global() { return 1; }")
+    assert air.is_hermes_bundle(str(plain)) is False
+
+    missing = tmp_path / "does_not_exist.bundle"
+    assert air.is_hermes_bundle(str(missing)) is False
+
+
+def test_load_decompiled_plain_text_passthrough(tmp_path):
+    plain = tmp_path / "plain.js"
+    contents = "function global() { return 1; }"
+    plain.write_text(contents)
+    assert air.load_decompiled(str(plain)) == contents
+
+
+def test_load_decompiled_runs_decompiler_on_bundle(tmp_path):
+    bundle = tmp_path / "index.android.bundle"
+    bundle.write_bytes(b"\xc6\x1f\xbc\x03" + b"\x00" * 60)
+
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return types.SimpleNamespace(returncode=0, stdout="function global(r0){}", stderr="")
+
+    out = air.load_decompiled(str(bundle), run=fake_run)
+    assert out == "function global(r0){}"
+    assert calls[0][0] == "hbc-decompiler"
+
+
+def test_load_decompiled_raises_on_decompiler_failure(tmp_path):
+    bundle = tmp_path / "index.android.bundle"
+    bundle.write_bytes(b"\xc6\x1f\xbc\x03" + b"\x00" * 60)
+
+    def fake_run(argv, **kwargs):
+        return types.SimpleNamespace(returncode=1, stdout="", stderr="boom")
+
+    with pytest.raises(air.DecompileError):
+        air.load_decompiled(str(bundle), run=fake_run)
