@@ -129,3 +129,61 @@ def test_suggest_names_retries_then_gives_up():
     out = air.suggest_names(funcs[2], "m", "u", 0.15, query=bad_query)
     assert out == []
     assert len(attempts) == 2  # one retry
+
+
+def test_suggest_names_survives_malformed_schema():
+    """Regression test: suggest_names must not crash on schema-mismatched but valid JSON.
+
+    Tests multiple malformed responses:
+    1. Top-level is a string (not dict)
+    2. function field is a string (not dict)
+    3. registers field is a list (not dict)
+    4. registers has non-dict values
+
+    In each case, suggest_names should return a list (possibly empty) without raising.
+    """
+    funcs = air.collect_functions(FIX.read_text())
+    fetch = funcs[1]  # fetchData, scope fn#1
+    test_cases = [
+        # Case 1: Top-level is a bare string
+        (_json.dumps("not a dict"), "bare-string"),
+        # Case 2: Top-level is a number
+        (_json.dumps(123), "bare-number"),
+        # Case 3: function field is a string (not dict)
+        (_json.dumps({"function": "some_name", "registers": {}}), "function-is-string"),
+        # Case 4: registers is a list (not dict)
+        (_json.dumps({"function": {"name": "renamed", "confidence": 0.9}, "registers": []}),
+         "registers-is-list"),
+        # Case 5: registers has non-dict values
+        (_json.dumps({"function": {"name": "renamed", "confidence": 0.9},
+                      "registers": {"r0": "not_a_dict", "r1": {"name": "val", "confidence": 0.8}}}),
+         "registers-mixed-values"),
+        # Case 6: Valid response (control case, should work)
+        (_json.dumps({"function": {"name": "validName", "confidence": 0.9},
+                      "registers": {"r0": {"name": "token", "confidence": 0.8}}}),
+         "valid-response"),
+    ]
+
+    for response_json, case_name in test_cases:
+        call_count = [0]
+        def fake_query(prompt, model, url, temperature, timeout=180):
+            call_count[0] += 1
+            # First attempt returns malformed, second returns empty dict (fallback on retry)
+            if call_count[0] == 1:
+                return response_json
+            return _json.dumps({})
+
+        # Should not raise, regardless of schema mismatch
+        result = air.suggest_names(fetch, "m", "u", 0.15, query=fake_query)
+        assert isinstance(result, list), f"Case {case_name}: should return list, got {type(result)}"
+
+        # For the valid response case, we should get the expected rename
+        if case_name == "valid-response":
+            got = {(r.scope, r.original): (r.suggested, r.confidence) for r in result}
+            assert ("global", "fetchData") in got, f"Case {case_name}: should have function rename"
+            assert got[("global", "fetchData")][0] == "validName"
+        # For case with valid function but malformed registers, we should still get function rename
+        elif case_name == "registers-is-list":
+            got = {(r.scope, r.original): (r.suggested, r.confidence) for r in result}
+            assert ("global", "fetchData") in got, f"Case {case_name}: should have function rename even with bad registers"
+            assert got[("global", "fetchData")][0] == "renamed"

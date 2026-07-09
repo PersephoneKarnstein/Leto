@@ -188,6 +188,7 @@ def build_prompt(func) -> str:
 
 
 def query_ollama(prompt, model, url, temperature, timeout=180) -> str:
+    url = url.rstrip("/")  # Normalize URL to prevent double slashes
     endpoint = "http://%s/api/generate" % url if "://" not in url else url + "/api/generate"
     payload = json.dumps({
         "model": model, "prompt": prompt, "stream": False,
@@ -208,16 +209,29 @@ def suggest_names(func, model, url, temperature, query=query_ollama) -> list:
         raw = query(prompt, model, url, temperature)
         try:
             data = json.loads(raw)
+            # Validate that data is a dict; if not, treat as failed parse
+            if not isinstance(data, dict):
+                raise TypeError("Expected dict, got %s" % type(data).__name__)
             break
         except (json.JSONDecodeError, TypeError):
             if attempt == 1:
                 return []
     renames = []
+    # Guard fn: ensure it is a dict before calling .get()
     fn = data.get("function") or {}
+    if not isinstance(fn, dict):
+        fn = {}
     if func.name and fn.get("name") and fn["name"] != func.name:
         renames.append(Rename("global", func.name, fn["name"],
                               float(fn.get("confidence", 0.0))))
-    for reg, info in (data.get("registers") or {}).items():
+    # Guard registers: ensure it is a dict before calling .items()
+    regs = data.get("registers") or {}
+    if not isinstance(regs, dict):
+        regs = {}
+    for reg, info in regs.items():
+        # Guard info: skip entries where info is not a dict
+        if not isinstance(info, dict):
+            continue
         if reg in func.registers and info.get("name") and info["name"] != reg:
             renames.append(Rename(scope_id(func), reg, info["name"],
                                   float(info.get("confidence", 0.0))))
