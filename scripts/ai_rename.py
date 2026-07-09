@@ -82,11 +82,25 @@ def scope_id(func) -> str:
     return "fn#%d" % func.index
 
 
-def _sub_token(text: str, original: str, suggested: str) -> str:
-    return re.sub(r"(?<![\w$])" + re.escape(original) + r"(?![\w$])", suggested, text)
+def _apply_map(text: str, mapping: dict) -> str:
+    """Apply a mapping of token renames in a single pass to prevent intra-scope collapse.
+
+    Matches all keys simultaneously, so already-substituted text is never re-scanned.
+    Sorts keys by length (longest first) to avoid r1 matching within r10.
+    """
+    if not mapping:
+        return text
+    keys = sorted(mapping, key=len, reverse=True)
+    pat = re.compile(r"(?<![\w$])(" + "|".join(re.escape(k) for k in keys) + r")(?![\w$])")
+    return pat.sub(lambda m: mapping[m.group(1)], text)
 
 
 def apply_renames(js_text: str, funcs: list, renames: list) -> str:
+    """Apply Rename objects to js_text.
+
+    Assumes function spans in funcs are non-overlapping and non-nested (true for
+    Hermes-decompiled output, which hoists closures to disjoint top-level functions).
+    """
     by_scope = {}
     global_renames = []
     for r in renames:
@@ -95,7 +109,8 @@ def apply_renames(js_text: str, funcs: list, renames: list) -> str:
         else:
             by_scope.setdefault(r.scope, []).append(r)
     # Apply per-function renames inside spans, working right-to-left so earlier
-    # spans' offsets stay valid.
+    # spans' offsets stay valid. Use single-pass substitution per scope to prevent
+    # one rename's suggested name from being matched by another's original.
     pieces = js_text
     for func in sorted(funcs, key=lambda f: f.span[0], reverse=True):
         local = by_scope.get(scope_id(func))
@@ -103,10 +118,10 @@ def apply_renames(js_text: str, funcs: list, renames: list) -> str:
             continue
         start, end = func.span
         block = pieces[start:end]
-        for r in local:
-            block = _sub_token(block, r.original, r.suggested)
+        mapping = {r.original: r.suggested for r in local}
+        block = _apply_map(block, mapping)
         pieces = pieces[:start] + block + pieces[end:]
-    # Global (function-name) renames apply across the whole file.
-    for r in global_renames:
-        pieces = _sub_token(pieces, r.original, r.suggested)
+    # Global (function-name) renames apply across the whole file, also in one pass.
+    global_mapping = {r.original: r.suggested for r in global_renames}
+    pieces = _apply_map(pieces, global_mapping)
     return pieces
