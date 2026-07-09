@@ -187,3 +187,22 @@ def test_suggest_names_survives_malformed_schema():
             got = {(r.scope, r.original): (r.suggested, r.confidence) for r in result}
             assert ("global", "fetchData") in got, f"Case {case_name}: should have function rename even with bad registers"
             assert got[("global", "fetchData")][0] == "renamed"
+
+
+def test_select_default_is_strings_only():
+    funcs = air.collect_functions(FIX.read_text())
+    sel = air.select_functions(funcs)
+    # global, fetchData have strings; normalize does not
+    assert {f.name for f in sel} == {"global", "fetchData"}
+
+def test_select_range_and_function_with_depth():
+    funcs = air.collect_functions(FIX.read_text())
+    assert [f.index for f in air.select_functions(funcs, id_range=(1, 2))] == [1, 2]
+    # global calls fetchData calls normalize; depth=2 from index 0 pulls all three
+    sel = air.select_functions(funcs, function="global", depth=2)
+    assert {f.name for f in sel} == {"global", "fetchData", "normalize"}
+
+def test_select_all_and_limit():
+    funcs = air.collect_functions(FIX.read_text())
+    assert len(air.select_functions(funcs, all_=True)) == 3
+    assert len(air.select_functions(funcs, all_=True, limit=2)) == 2

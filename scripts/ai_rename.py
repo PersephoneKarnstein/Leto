@@ -7,6 +7,8 @@ program-consistent names. See SKILL-common.md "AI-Assisted Renaming".
 """
 import json
 import re
+import struct
+import subprocess
 import urllib.request
 from dataclasses import dataclass, field
 
@@ -56,6 +58,16 @@ def _match_block(text: str, open_brace_pos: int) -> int:
     return n
 
 
+def _is_bracket_property_key(body: str, start: int, end: int) -> bool:
+    """True if the quoted match at body[start:end] is bracket-notation member
+    access (e.g. r0['token']) rather than a real string constant. These are JS
+    property-name syntax, not "surviving string constants", and would otherwise
+    give every function false positive signal for default targeting."""
+    before = body[:start].rstrip()
+    after = body[end:].lstrip()
+    return before.endswith("[") and after.startswith("]")
+
+
 def collect_functions(js_text: str) -> list:
     funcs = []
     all_names = []
@@ -66,7 +78,10 @@ def collect_functions(js_text: str) -> list:
         body = js_text[m.start():end]
         name = m.group(1)
         registers = set(REGISTER_RE.findall(body))
-        strings = [g[1] for g in STRING_RE.findall(body)]
+        strings = [
+            sm.group(2) for sm in STRING_RE.finditer(body)
+            if not _is_bracket_property_key(body, sm.start(), sm.end())
+        ]
         raw.append((idx, name, (m.start(), end), body, registers, strings))
         if name:
             all_names.append(name)
@@ -236,3 +251,59 @@ def suggest_names(func, model, url, temperature, query=query_ollama) -> list:
             renames.append(Rename(scope_id(func), reg, info["name"],
                                   float(info.get("confidence", 0.0))))
     return renames
+
+
+def is_hermes_bundle(path: str) -> bool:
+    try:
+        with open(path, "rb") as f:
+            magic = f.read(4)
+        return magic in (b"\xc6\x1f\xbc\x03", b"\x1f\xc6\x03\xbc")
+    except OSError:
+        return False
+
+
+def load_decompiled(path: str, run=subprocess.run) -> str:
+    if is_hermes_bundle(path):
+        proc = run(["hbc-decompiler", path, "/dev/stdout"],
+                   capture_output=True, text=True, timeout=1800)
+        if proc.returncode != 0:
+            raise OllamaError("hbc-decompiler failed: " + (proc.stderr or "")[:200])
+        return proc.stdout
+    with open(path, "r", errors="ignore") as f:
+        return f.read()
+
+
+def _by_name(funcs):
+    return {f.name: f for f in funcs if f.name}
+
+
+def select_functions(funcs, function=None, depth=1, id_range=None,
+                     all_=False, limit=None):
+    if function is not None:
+        index = _by_name(funcs)
+        # BFS out to `depth` hops. Mark nodes seen when *discovered* (enqueued),
+        # not when processed -- marking on processing is off-by-one: it would
+        # stop one hop short because the last frontier's callees get queued but
+        # the loop ends before they're ever visited.
+        seen = {function}
+        frontier = [function]
+        for _ in range(max(depth, 1)):
+            nxt = []
+            for nm in frontier:
+                fn = index.get(nm)
+                if not fn:
+                    continue
+                for c in fn.callees:
+                    if c not in seen:
+                        seen.add(c)
+                        nxt.append(c)
+            frontier = nxt
+        chosen = [f for f in funcs if f.name in seen]
+    elif id_range is not None:
+        lo, hi = id_range
+        chosen = [f for f in funcs if lo <= f.index <= hi]
+    elif all_:
+        chosen = list(funcs)
+    else:
+        chosen = [f for f in funcs if f.strings]
+    return chosen[:limit] if limit else chosen
