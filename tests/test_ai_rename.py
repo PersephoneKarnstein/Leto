@@ -266,3 +266,54 @@ def test_cache_roundtrip_and_key_sensitivity(tmp_path):
     air.cache_store(str(tmp_path), k1, rs)
     loaded = air.cache_load(str(tmp_path), k1)
     assert loaded == rs
+
+
+def test_cache_load_corrupt_returns_none(tmp_path):
+    """Regression: cache_load must treat invalid JSON as cache MISS, not crash."""
+    key = "test_corrupt"
+    cache_file = tmp_path / (key + ".json")
+    # Write truncated/invalid JSON
+    cache_file.write_text("{not json")
+    # Should return None, not raise
+    result = air.cache_load(str(tmp_path), key)
+    assert result is None
+
+
+def test_cache_load_schema_drift_returns_none(tmp_path):
+    """Regression: cache_load must treat schema drift (extra keys) as cache MISS."""
+    key = "test_schema_drift"
+    cache_file = tmp_path / (key + ".json")
+    # Write valid JSON but with extra/unexpected key
+    # This will cause TypeError when unpacking with Rename(**r)
+    invalid_data = [
+        {
+            "scope": "global",
+            "original": "a",
+            "suggested": "b",
+            "confidence": 0.5,
+            "UNEXPECTED_KEY": "should_break_unpacking"
+        }
+    ]
+    cache_file.write_text(_json.dumps(invalid_data))
+    # Should return None, not raise TypeError
+    result = air.cache_load(str(tmp_path), key)
+    assert result is None
+
+
+def test_cache_store_atomic_roundtrip(tmp_path):
+    """Regression: cache_store must write atomically with no .tmp leftover."""
+    key = "test_atomic"
+    cache_dir = str(tmp_path)
+    renames = [
+        air.Rename("global", "fetchData", "login", 0.9),
+        air.Rename("fn#1", "r0", "token", 0.8),
+    ]
+    # Store to cache
+    air.cache_store(cache_dir, key, renames)
+    # Verify no .tmp file remains
+    import glob
+    tmp_files = glob.glob(str(tmp_path / "*.tmp"))
+    assert len(tmp_files) == 0, f"Unexpected .tmp files: {tmp_files}"
+    # Verify the final file exists and is readable
+    loaded = air.cache_load(cache_dir, key)
+    assert loaded == renames, "Roundtrip failed: loaded data doesn't match stored"

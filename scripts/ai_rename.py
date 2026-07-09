@@ -11,6 +11,8 @@ import os
 import re
 import struct
 import subprocess
+import sys
+import tempfile
 import urllib.request
 from dataclasses import dataclass, field
 
@@ -116,25 +118,45 @@ def cache_key(func, model: str) -> str:
 def cache_load(cache_dir: str, key: str):
     """Load cached renames from a JSON file.
 
-    Returns list of Rename objects if file exists, None otherwise.
+    Returns list of Rename objects if file exists and is valid, None otherwise.
+    Treats corrupt/unreadable/schema-drifted entries as cache MISS (returns None).
     """
     path = os.path.join(cache_dir, key + ".json")
     if not os.path.exists(path):
         return None
-    with open(path) as f:
-        data = json.load(f)
-    return [Rename(**r) for r in data]
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        return [Rename(**r) for r in data]
+    except (json.JSONDecodeError, TypeError, OSError, ValueError) as e:
+        # Corrupt JSON, schema drift, file unreadable, or deserialization error
+        sys.stderr.write(f"cache_load: corrupted cache entry {key}.json: {e}\n")
+        return None
 
 
 def cache_store(cache_dir: str, key: str, renames: list) -> None:
-    """Store renames to a JSON cache file.
+    """Store renames to a JSON cache file atomically.
 
-    Creates cache_dir if needed and writes renames as JSON list of dicts.
+    Creates cache_dir if needed. Writes to a temp file first, then atomically
+    replaces the final path to avoid leaving half-written cache entries.
     """
     os.makedirs(cache_dir, exist_ok=True)
     path = os.path.join(cache_dir, key + ".json")
-    with open(path, "w") as f:
-        json.dump([r.__dict__ for r in renames], f)
+
+    # Write to a temp file in the same directory for atomic replace
+    fd, tmp_path = tempfile.mkstemp(dir=cache_dir, prefix=key, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump([r.__dict__ for r in renames], f)
+        # Atomically replace the final path
+        os.replace(tmp_path, path)
+    except Exception:
+        # Clean up temp file on error
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def _apply_map(text: str, mapping: dict) -> str:
