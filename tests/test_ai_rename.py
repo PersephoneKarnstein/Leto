@@ -335,6 +335,46 @@ def test_run_rename_end_to_end_mocked(tmp_path):
                    cache_dir=str(tmp_path / "cache"), query=boom)
 
 
+def test_run_rename_ollama_error_not_cached(tmp_path):
+    """Regression: a transient OllamaError must NOT poison the cache with [].
+
+    If suggest_names raises OllamaError (transport failure), run_rename must
+    skip that function's renames for this run but must NOT cache_store the
+    empty result -- otherwise a later resume run would load the cached []
+    forever and never re-query the function once ollama is back up.
+    """
+    js = FIX.read_text()
+    cache_dir = str(tmp_path / "cache")
+
+    def failing_query(prompt, model, url, temperature, timeout=180):
+        raise air.OllamaError("down")
+
+    # First run: ollama is down for every call. Should complete without raising
+    # and produce no renames.
+    map_dict, out_js = air.run_rename(
+        js, "bundle.js", "m", "u", 0.15,
+        selection_kwargs={},  # default: strings-only -> global + fetchData
+        cache_dir=cache_dir, query=failing_query)
+    assert map_dict["renames"] == []
+
+    # Second run: ollama is back up and returns a valid rename. If the first
+    # run had (incorrectly) cached the empty result, this run would load the
+    # cached [] and never re-query -- so the rename would NOT appear.
+    def working_query(prompt, model, url, temperature, timeout=180):
+        if "function fetchData(" in prompt:
+            return _json.dumps({
+                "function": {"name": "fetchLoginSession", "confidence": 0.9},
+                "registers": {}})
+        return _json.dumps({"function": {}, "registers": {}})
+
+    map_dict2, out_js2 = air.run_rename(
+        js, "bundle.js", "m", "u", 0.15,
+        selection_kwargs={},
+        cache_dir=cache_dir, query=working_query)
+    pairs = {(r["scope"], r["original"]): r["suggested"] for r in map_dict2["renames"]}
+    assert pairs[("global", "fetchData")] == "fetchLoginSession"
+
+
 def test_cache_store_atomic_roundtrip(tmp_path):
     """Regression: cache_store must write atomically with no .tmp leftover."""
     key = "test_atomic"

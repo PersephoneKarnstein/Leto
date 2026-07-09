@@ -397,11 +397,11 @@ def run_rename(js_text, source, model, url, temperature, selection_kwargs,
             continue
         try:
             rs = suggest_names(func, model, url, temperature, query=query)
+            if cache_dir:
+                cache_store(cache_dir, key, rs)
         except OllamaError as e:
             sys.stderr.write("skip %s: %s\n" % (func.name or scope_id(func), e))
             rs = []
-        if cache_dir:
-            cache_store(cache_dir, key, rs)
         all_renames.extend(rs)
     reconciled = reconcile(all_renames)
     out_js = apply_renames(js_text, funcs, reconciled)
@@ -424,10 +424,21 @@ def main():
     p.add_argument("--no-cache", action="store_true")
     args = p.parse_args()
 
-    js_text = load_decompiled(args.input)
+    try:
+        js_text = load_decompiled(args.input)
+    except DecompileError as e:
+        sys.stderr.write("error: failed to decompile %s: %s\n" % (args.input, e))
+        sys.exit(1)
+
     id_range = None
     if args.id_range:
-        lo, hi = args.id_range.split("-")
+        parts = args.id_range.split("-")
+        if len(parts) != 2 or not all(p.strip().lstrip("-").isdigit() for p in parts):
+            sys.stderr.write(
+                "error: --range must be in the form <int>-<int>, e.g. 100-140 "
+                "(got %r)\n" % args.id_range)
+            sys.exit(2)
+        lo, hi = parts
         id_range = (int(lo), int(hi))
     selection = {"function": args.function, "depth": args.depth,
                  "id_range": id_range, "all_": args.all, "limit": args.limit}
