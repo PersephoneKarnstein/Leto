@@ -48,3 +48,6 @@ decompiled/
 # Claude
 .claude/
 CLAUDE.md
+
+# subagent-driven-development scratch (progress ledger)
+.superpowers/

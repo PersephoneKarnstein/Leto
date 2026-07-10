@@ -33,6 +33,7 @@ These tools are used on both platforms:
 | **objection** | App patching, exploration | `pip install objection` | May need sqlite3 fix on macOS Conda |
 | **gitleaks** | Secret scanning | `brew install gitleaks` | Use `gitleaks dir` syntax (not `gitleaks detect --source`) |
 | **betterleaks** | Secret scanning (alternative) | See [betterleaks](https://github.com/betterleaks/betterleaks) | Lower false positive rate than gitleaks on bytecode |
+| **ollama** | Local LLM runtime for AI renaming | `brew install ollama` | Pull a model: `ollama pull qwen3-coder:30b` |
 
 ### Frida Version Compatibility
 
@@ -96,6 +97,34 @@ The enhanced scanner detects:
 - **Character code arrays** -- detects `[65, 75, 73, ...]` patterns (AWS keys, etc.)
 - **Split string fragments** -- finds `sk_test_`, `AKIA`, `ghp_` prefixes
 - **Anti-tampering indicators** -- root/jailbreak detection, Frida detection, SSL pinning
+
+---
+
+## AI-Assisted Renaming
+
+Decompiled Hermes identifiers are meaningless (`r0`, `r1`, anonymous functions). `ai_rename.py`
+uses a **local** model (ollama + `qwen3-coder:30b`) to suggest meaningful, whole-program-consistent
+names — the JSNice/Nice2Predict goal without a training corpus, and without spending paid context.
+
+```bash
+# Rename a whole bundle's high-signal functions (auto-decompiles if given a bundle)
+python scripts/ai_rename.py index.android.bundle -o rename_out
+
+# Target one function and its callees
+python scripts/ai_rename.py decompiled.js --function fetchData --depth 2 -o rename_out
+
+# Whole bundle (resumable via cache), or a function-index range
+python scripts/ai_rename.py decompiled.js --all
+python scripts/ai_rename.py decompiled.js --range 100-140
+
+# Review the map before rewriting anything
+python scripts/ai_rename.py decompiled.js --dry-run -o rename_out
+```
+
+Outputs `rename_out/rename-map.json` (always) and `rename_out/renamed.js` (unless `--dry-run`).
+Requires a running ollama with the model pulled: `ollama pull qwen3-coder:30b`.
+The rename-map format is shared with the Hermes2Predict trained-model project so backends are interchangeable.
+Substitution skips tokens inside detected string literals so surviving string constants aren't corrupted; comments are not similarly protected (best-effort only).
 
 ---
 
@@ -326,6 +355,7 @@ The `file` command is the most reliable method for version detection.
 | `enhanced_secret_scan.py` | Obfuscated secret detection | `--json`, `--category {direct,base64,hex,char_array,fragments,anti_tamper,endpoints,all}` |
 | `detect_obfuscation.py` | Obfuscation technique detection | `--verbose`, `--json` |
 | `sourcemap_recovery.py` | Source map detection/extraction | `--extract`, `--output DIR`, `--json` |
+| `ai_rename.py` | AI-assisted identifier renaming (local LLM) | `--function`, `--range`, `--all`, `--depth`, `--limit`, `--model`, `--ollama-url`, `--dry-run`, `-o DIR` |
 
 ### Traffic Scripts
 

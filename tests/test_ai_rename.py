@@ -1,0 +1,506 @@
+import sys, pathlib, types
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+import ai_rename as air
+import json as _json
+import pytest
+
+FIX = pathlib.Path(__file__).parent / "fixtures" / "decompiled_sample.js"
+
+def test_collect_functions_basic():
+    funcs = air.collect_functions(FIX.read_text())
+    names = [f.name for f in funcs]
+    assert names == ["global", "fetchData", "normalize"]
+    assert [f.index for f in funcs] == [0, 1, 2]
+    fetch = funcs[1]
+    assert fetch.registers == {"r0", "r1", "r2", "r3", "r4"}
+    assert "https://api.example.com/login" not in fetch.strings  # belongs to global
+    assert "/v1/session" in fetch.strings
+    assert "fetchData" in funcs[0].callees
+    assert "normalize" in fetch.callees
+    # r10 must be captured distinctly from r1 (word-boundary correctness)
+    assert "r10" in funcs[2].registers and "r1" in funcs[2].registers
+
+
+def test_apply_renames_scoped_and_global():
+    js = FIX.read_text()
+    funcs = air.collect_functions(js)
+    renames = [
+        air.Rename("global", "fetchData", "fetchLoginSession", 0.9),
+        air.Rename("fn#1", "r2", "authToken", 0.8),   # local to fetchData only
+        air.Rename("fn#2", "r1", "strLength", 0.7),    # local to normalize
+    ]
+    out = air.apply_renames(js, funcs, renames)
+    # global rename hits the definition AND the call site in `global`
+    assert "function fetchLoginSession(" in out
+    assert "r3 = fetchLoginSession(r0, r2)" in out
+    # fetchData's r2 renamed, but `global` also has an r2 that must be untouched
+    assert "authToken = r0['token']" in out
+    assert 'r2 = "https://api.example.com/login"' in out  # global's r2 intact
+    # normalize's r1 renamed but r10 left alone (word boundary)
+    assert "strLength = r0['length']" in out
+    assert "r10 = r0" in out
+    # `global`'s own r1 (its second parameter) is untouched by fn#2's r1 rename --
+    # proves scope isolation, not just that some "r1" substring survives anywhere.
+    assert "function global(r0, r1)" in out
+
+
+def test_apply_renames_no_intra_scope_collapse():
+    """Regression test: ensure renames within a scope don't collapse into each other.
+
+    If one rename's suggested name equals another's original name (near-swap),
+    the second substitution must NOT affect text already produced by the first.
+    This is a classic single-pass vs sequential substitution bug.
+    """
+    # Create a minimal function with two registers
+    js = """function test() {
+  var r1 = 0;
+  var r2 = 1;
+  return r1 + r2;
+}"""
+    funcs = [air.Function(0, "test", (0, len(js)), js, {"r1", "r2"}, [], [])]
+
+    # Define renames where r1 -> r2, then r2 -> finalName
+    # If applied sequentially, this would collapse: r1 becomes r2, then that r2 becomes finalName
+    # With single-pass, r1 -> r2 and r2 -> finalName happen simultaneously, keeping them distinct
+    renames = [
+        air.Rename("fn#0", "r1", "r2", 0.8),        # first: r1 -> r2
+        air.Rename("fn#0", "r2", "finalName", 0.9), # second: r2 -> finalName
+    ]
+
+    out = air.apply_renames(js, funcs, renames)
+
+    # Both renames should be applied distinctly
+    # The original r1 should become r2
+    assert "var r2 = 0" in out, "Original r1 should be renamed to r2"
+    # The original r2 should become finalName (not collapsed into r2)
+    assert "var finalName = 1" in out, "Original r2 should be renamed to finalName"
+    # Make sure we have both distinct names
+    assert "return r2 + finalName" in out, "Both registers should appear with correct final names"
+
+
+def test_reconcile_disambiguates_within_scope():
+    renames = [
+        air.Rename("global", "a", "handler", 0.9),
+        air.Rename("global", "b", "handler", 0.8),   # collide -> handler_2
+        air.Rename("fn#1", "r0", "value", 0.7),
+        air.Rename("fn#1", "r1", "value", 0.6),        # collide -> value_2
+        air.Rename("fn#2", "r0", "value", 0.7),        # different scope: OK, stays 'value'
+    ]
+    out = {(r.scope, r.original): r.suggested for r in air.reconcile(renames)}
+    assert out[("global", "a")] == "handler"
+    assert out[("global", "b")] == "handler_2"
+    assert out[("fn#1", "r0")] == "value"
+    assert out[("fn#1", "r1")] == "value_2"
+    assert out[("fn#2", "r0")] == "value"
+
+
+def test_to_map_dict_schema():
+    d = air.to_map_dict("bundle.js", "qwen3-coder:30b",
+                        [air.Rename("global", "fetchData", "login", 0.9)])
+    assert d["source"] == "bundle.js"
+    assert d["model"] == "qwen3-coder:30b"
+    assert d["renames"] == [
+        {"scope": "global", "original": "fetchData", "suggested": "login", "confidence": 0.9}
+    ]
+
+
+def test_suggest_names_parses_model_json():
+    funcs = air.collect_functions(FIX.read_text())
+    fetch = funcs[1]  # fetchData, scope fn#1
+    fake_response = _json.dumps({
+        "function": {"name": "fetchLoginSession", "confidence": 0.9},
+        "registers": {"r2": {"name": "authToken", "confidence": 0.8}},
+    })
+    calls = []
+    def fake_query(prompt, model, url, temperature, timeout=180):
+        calls.append(prompt)
+        return fake_response
+    out = air.suggest_names(fetch, "m", "u", 0.15, query=fake_query)
+    got = {(r.scope, r.original): (r.suggested, r.confidence) for r in out}
+    assert got[("global", "fetchData")] == ("fetchLoginSession", 0.9)
+    assert got[("fn#1", "r2")] == ("authToken", 0.8)
+    assert "fetchData" in calls[0]  # prompt includes the function body
+
+
+def test_suggest_names_retries_then_raises_on_persistent_bad_json():
+    """Regression: giving up after a retry must raise, not silently return [].
+
+    A silent [] return is indistinguishable from "the model legitimately
+    suggested nothing", and run_rename would cache that [] forever, poisoning
+    the resumable cache for a function ollama never actually evaluated.
+    """
+    funcs = air.collect_functions(FIX.read_text())
+    attempts = []
+    def bad_query(prompt, model, url, temperature, timeout=180):
+        attempts.append(1)
+        return "not json{"
+    with pytest.raises(air.OllamaError):
+        air.suggest_names(funcs[2], "m", "u", 0.15, query=bad_query)
+    assert len(attempts) == 2  # one retry
+
+
+def test_suggest_names_survives_malformed_schema():
+    """Regression test: suggest_names must not crash on schema-mismatched but valid JSON.
+
+    Tests multiple malformed responses:
+    1. Top-level is a string (not dict)
+    2. function field is a string (not dict)
+    3. registers field is a list (not dict)
+    4. registers has non-dict values
+
+    In each case, suggest_names should return a list (possibly empty) without raising.
+    """
+    funcs = air.collect_functions(FIX.read_text())
+    fetch = funcs[1]  # fetchData, scope fn#1
+    test_cases = [
+        # Case 1: Top-level is a bare string
+        (_json.dumps("not a dict"), "bare-string"),
+        # Case 2: Top-level is a number
+        (_json.dumps(123), "bare-number"),
+        # Case 3: function field is a string (not dict)
+        (_json.dumps({"function": "some_name", "registers": {}}), "function-is-string"),
+        # Case 4: registers is a list (not dict)
+        (_json.dumps({"function": {"name": "renamed", "confidence": 0.9}, "registers": []}),
+         "registers-is-list"),
+        # Case 5: registers has non-dict values
+        (_json.dumps({"function": {"name": "renamed", "confidence": 0.9},
+                      "registers": {"r0": "not_a_dict", "r1": {"name": "val", "confidence": 0.8}}}),
+         "registers-mixed-values"),
+        # Case 6: Valid response (control case, should work)
+        (_json.dumps({"function": {"name": "validName", "confidence": 0.9},
+                      "registers": {"r0": {"name": "token", "confidence": 0.8}}}),
+         "valid-response"),
+    ]
+
+    for response_json, case_name in test_cases:
+        call_count = [0]
+        def fake_query(prompt, model, url, temperature, timeout=180):
+            call_count[0] += 1
+            # First attempt returns malformed, second returns empty dict (fallback on retry)
+            if call_count[0] == 1:
+                return response_json
+            return _json.dumps({})
+
+        # Should not raise, regardless of schema mismatch
+        result = air.suggest_names(fetch, "m", "u", 0.15, query=fake_query)
+        assert isinstance(result, list), f"Case {case_name}: should return list, got {type(result)}"
+
+        # For the valid response case, we should get the expected rename
+        if case_name == "valid-response":
+            got = {(r.scope, r.original): (r.suggested, r.confidence) for r in result}
+            assert ("global", "fetchData") in got, f"Case {case_name}: should have function rename"
+            assert got[("global", "fetchData")][0] == "validName"
+        # For case with valid function but malformed registers, we should still get function rename
+        elif case_name == "registers-is-list":
+            got = {(r.scope, r.original): (r.suggested, r.confidence) for r in result}
+            assert ("global", "fetchData") in got, f"Case {case_name}: should have function rename even with bad registers"
+            assert got[("global", "fetchData")][0] == "renamed"
+
+
+def test_select_default_is_strings_only():
+    funcs = air.collect_functions(FIX.read_text())
+    sel = air.select_functions(funcs)
+    # global, fetchData have strings; normalize does not
+    assert {f.name for f in sel} == {"global", "fetchData"}
+
+def test_select_range_and_function_with_depth():
+    funcs = air.collect_functions(FIX.read_text())
+    assert [f.index for f in air.select_functions(funcs, id_range=(1, 2))] == [1, 2]
+    # global calls fetchData calls normalize; depth=2 from index 0 pulls all three
+    sel = air.select_functions(funcs, function="global", depth=2)
+    assert {f.name for f in sel} == {"global", "fetchData", "normalize"}
+
+def test_select_all_and_limit():
+    funcs = air.collect_functions(FIX.read_text())
+    assert len(air.select_functions(funcs, all_=True)) == 3
+    assert len(air.select_functions(funcs, all_=True, limit=2)) == 2
+
+
+def test_is_hermes_bundle_detects_magic(tmp_path):
+    bundle = tmp_path / "index.android.bundle"
+    bundle.write_bytes(b"\xc6\x1f\xbc\x03" + b"\x00" * 60)
+    assert air.is_hermes_bundle(str(bundle)) is True
+
+    plain = tmp_path / "plain.js"
+    plain.write_text("function global() { return 1; }")
+    assert air.is_hermes_bundle(str(plain)) is False
+
+    missing = tmp_path / "does_not_exist.bundle"
+    assert air.is_hermes_bundle(str(missing)) is False
+
+
+def test_load_decompiled_plain_text_passthrough(tmp_path):
+    plain = tmp_path / "plain.js"
+    contents = "function global() { return 1; }"
+    plain.write_text(contents)
+    assert air.load_decompiled(str(plain)) == contents
+
+
+def test_load_decompiled_runs_decompiler_on_bundle(tmp_path):
+    bundle = tmp_path / "index.android.bundle"
+    bundle.write_bytes(b"\xc6\x1f\xbc\x03" + b"\x00" * 60)
+
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return types.SimpleNamespace(returncode=0, stdout="function global(r0){}", stderr="")
+
+    out = air.load_decompiled(str(bundle), run=fake_run)
+    assert out == "function global(r0){}"
+    assert calls[0][0] == "hbc-decompiler"
+
+
+def test_load_decompiled_raises_on_decompiler_failure(tmp_path):
+    bundle = tmp_path / "index.android.bundle"
+    bundle.write_bytes(b"\xc6\x1f\xbc\x03" + b"\x00" * 60)
+
+    def fake_run(argv, **kwargs):
+        return types.SimpleNamespace(returncode=1, stdout="", stderr="boom")
+
+    with pytest.raises(air.DecompileError):
+        air.load_decompiled(str(bundle), run=fake_run)
+
+
+def test_cache_roundtrip_and_key_sensitivity(tmp_path):
+    funcs = air.collect_functions(FIX.read_text())
+    f = funcs[1]
+    k1 = air.cache_key(f, "qwen3-coder:30b")
+    k2 = air.cache_key(f, "other-model")
+    assert k1 != k2 and len(k1) == 64
+    assert air.cache_load(str(tmp_path), k1) is None
+    rs = [air.Rename("global", "fetchData", "login", 0.9)]
+    air.cache_store(str(tmp_path), k1, rs)
+    loaded = air.cache_load(str(tmp_path), k1)
+    assert loaded == rs
+
+
+def test_cache_load_corrupt_returns_none(tmp_path):
+    """Regression: cache_load must treat invalid JSON as cache MISS, not crash."""
+    key = "test_corrupt"
+    cache_file = tmp_path / (key + ".json")
+    # Write truncated/invalid JSON
+    cache_file.write_text("{not json")
+    # Should return None, not raise
+    result = air.cache_load(str(tmp_path), key)
+    assert result is None
+
+
+def test_cache_load_schema_drift_returns_none(tmp_path):
+    """Regression: cache_load must treat schema drift (extra keys) as cache MISS."""
+    key = "test_schema_drift"
+    cache_file = tmp_path / (key + ".json")
+    # Write valid JSON but with extra/unexpected key
+    # This will cause TypeError when unpacking with Rename(**r)
+    invalid_data = [
+        {
+            "scope": "global",
+            "original": "a",
+            "suggested": "b",
+            "confidence": 0.5,
+            "UNEXPECTED_KEY": "should_break_unpacking"
+        }
+    ]
+    cache_file.write_text(_json.dumps(invalid_data))
+    # Should return None, not raise TypeError
+    result = air.cache_load(str(tmp_path), key)
+    assert result is None
+
+
+def test_run_rename_end_to_end_mocked(tmp_path):
+    js = FIX.read_text()
+    responses = {
+        "fetchData": _json.dumps({
+            "function": {"name": "fetchLoginSession", "confidence": 0.9},
+            "registers": {"r2": {"name": "authToken", "confidence": 0.8}}}),
+        "global": _json.dumps({
+            "function": {"name": "global", "confidence": 0.0},
+            "registers": {"r2": {"name": "loginUrl", "confidence": 0.7}}}),
+    }
+    def fake_query(prompt, model, url, temperature, timeout=180):
+        for name, resp in responses.items():
+            if ("function " + name + "(") in prompt:
+                return resp
+        return _json.dumps({"function": {}, "registers": {}})
+    map_dict, out_js = air.run_rename(
+        js, "bundle.js", "m", "u", 0.15,
+        selection_kwargs={},  # default: strings-only -> global + fetchData
+        cache_dir=str(tmp_path / "cache"), query=fake_query)
+    assert "function fetchLoginSession(" in out_js
+    # global's own r2 is renamed to loginUrl throughout its scope (definition AND
+    # call site use), consistent with scope-wide substitution semantics already
+    # verified by test_apply_renames_no_intra_scope_collapse.
+    assert "r3 = fetchLoginSession(r0, loginUrl)" in out_js  # call site updated
+    assert "authToken = r0['token']" in out_js               # fetchData r2
+    assert 'loginUrl = "https://api.example.com/login"' in out_js  # global r2
+    pairs = {(r["scope"], r["original"]): r["suggested"] for r in map_dict["renames"]}
+    assert pairs[("global", "fetchData")] == "fetchLoginSession"
+    # second run must hit cache (no query calls)
+    def boom(*a, **k):
+        raise AssertionError("should be cached")
+    air.run_rename(js, "bundle.js", "m", "u", 0.15, selection_kwargs={},
+                   cache_dir=str(tmp_path / "cache"), query=boom)
+
+
+def test_run_rename_ollama_error_not_cached(tmp_path):
+    """Regression: a transient OllamaError must NOT poison the cache with [].
+
+    If suggest_names raises OllamaError (transport failure), run_rename must
+    skip that function's renames for this run but must NOT cache_store the
+    empty result -- otherwise a later resume run would load the cached []
+    forever and never re-query the function once ollama is back up.
+    """
+    js = FIX.read_text()
+    cache_dir = str(tmp_path / "cache")
+
+    def failing_query(prompt, model, url, temperature, timeout=180):
+        raise air.OllamaError("down")
+
+    # First run: ollama is down for every call. Should complete without raising
+    # and produce no renames.
+    map_dict, out_js = air.run_rename(
+        js, "bundle.js", "m", "u", 0.15,
+        selection_kwargs={},  # default: strings-only -> global + fetchData
+        cache_dir=cache_dir, query=failing_query)
+    assert map_dict["renames"] == []
+
+    # Second run: ollama is back up and returns a valid rename. If the first
+    # run had (incorrectly) cached the empty result, this run would load the
+    # cached [] and never re-query -- so the rename would NOT appear.
+    def working_query(prompt, model, url, temperature, timeout=180):
+        if "function fetchData(" in prompt:
+            return _json.dumps({
+                "function": {"name": "fetchLoginSession", "confidence": 0.9},
+                "registers": {}})
+        return _json.dumps({"function": {}, "registers": {}})
+
+    map_dict2, out_js2 = air.run_rename(
+        js, "bundle.js", "m", "u", 0.15,
+        selection_kwargs={},
+        cache_dir=cache_dir, query=working_query)
+    pairs = {(r["scope"], r["original"]): r["suggested"] for r in map_dict2["renames"]}
+    assert pairs[("global", "fetchData")] == "fetchLoginSession"
+
+
+def test_cache_store_atomic_roundtrip(tmp_path):
+    """Regression: cache_store must write atomically with no .tmp leftover."""
+    key = "test_atomic"
+    cache_dir = str(tmp_path)
+    renames = [
+        air.Rename("global", "fetchData", "login", 0.9),
+        air.Rename("fn#1", "r0", "token", 0.8),
+    ]
+    # Store to cache
+    air.cache_store(cache_dir, key, renames)
+    # Verify no .tmp file remains
+    import glob
+    tmp_files = glob.glob(str(tmp_path / "*.tmp"))
+    assert len(tmp_files) == 0, f"Unexpected .tmp files: {tmp_files}"
+    # Verify the final file exists and is readable
+    loaded = air.cache_load(cache_dir, key)
+    assert loaded == renames, "Roundtrip failed: loaded data doesn't match stored"
+
+
+def test_run_rename_bad_json_not_cached(tmp_path):
+    """Regression (C1): give-up-on-bad-JSON must NOT poison the resumable cache.
+
+    suggest_names now raises OllamaError when the model returns unparseable
+    JSON twice in a row. run_rename must treat that exactly like a transport
+    OllamaError: skip-and-log the function, write NO cache entry, and still
+    complete the run. A later healthy run must re-query rather than replay a
+    cached [] forever.
+    """
+    js = FIX.read_text()
+    cache_dir = str(tmp_path / "cache")
+
+    def bad_json_query(prompt, model, url, temperature, timeout=180):
+        return "not json{"
+
+    # First run: every function gets unparseable JSON. Must complete without
+    # raising, and must NOT cache the empty give-up result.
+    map_dict, out_js = air.run_rename(
+        js, "bundle.js", "m", "u", 0.15,
+        selection_kwargs={},  # default: strings-only -> global + fetchData
+        cache_dir=cache_dir, query=bad_json_query)
+    assert map_dict["renames"] == []
+
+    # Second run: ollama is healthy now. If the first run had (incorrectly)
+    # cached the give-up [], this run would load the stale cache and never
+    # re-query -- so the rename would NOT appear.
+    def working_query(prompt, model, url, temperature, timeout=180):
+        if "function fetchData(" in prompt:
+            return _json.dumps({
+                "function": {"name": "fetchLoginSession", "confidence": 0.9},
+                "registers": {}})
+        return _json.dumps({"function": {}, "registers": {}})
+
+    map_dict2, out_js2 = air.run_rename(
+        js, "bundle.js", "m", "u", 0.15,
+        selection_kwargs={},
+        cache_dir=cache_dir, query=working_query)
+    pairs = {(r["scope"], r["original"]): r["suggested"] for r in map_dict2["renames"]}
+    assert pairs[("global", "fetchData")] == "fetchLoginSession"
+
+
+def test_main_missing_input_file_exits_cleanly(tmp_path, monkeypatch, capsys):
+    """Regression (I2): a non-existent input path must produce a friendly
+    error + non-zero exit, not an uncaught FileNotFoundError traceback."""
+    missing = tmp_path / "does_not_exist.js"
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(sys, "argv", ["ai_rename.py", str(missing), "-o", str(out_dir)])
+    with pytest.raises(SystemExit) as exc_info:
+        air.main()
+    assert exc_info.value.code != 0
+    captured = capsys.readouterr()
+    assert "does_not_exist.js" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_apply_renames_skips_tokens_inside_string_literals():
+    """Regression (I1): substitution is purely textual, so a rename token that
+    also appears inside a surviving string constant must not corrupt that
+    string -- string contents are the highest-signal artifact for RE."""
+    js = (
+        'function global(r0, r1) {\n'
+        '  var msg = "please rename r1 carefully";\n'
+        '  return r1 + r0;\n'
+        '}'
+    )
+    funcs = [air.Function(0, "global", (0, len(js)), js, {"r0", "r1"}, [], [])]
+    renames = [air.Rename("fn#0", "r1", "sessionToken", 0.9)]
+    out = air.apply_renames(js, funcs, renames)
+    # the real code token r1 was renamed
+    assert "return sessionToken + r0" in out
+    # but the string literal contents were left byte-for-byte untouched
+    assert '"please rename r1 carefully"' in out
+
+
+def test_is_hermes_bundle_ignores_text_mentioning_hermes(tmp_path):
+    """Regression (M4): is_hermes_bundle must rely only on the 4-byte Hermes
+    magic. A decompiled .js file that merely mentions "Hermes" in a comment
+    must not be misdetected as a raw bundle."""
+    fake_js = tmp_path / "decompiled.js"
+    fake_js.write_text(
+        "// Decompiled by hermes-dec (targets Hermes bytecode)\n"
+        "function global() {}\n"
+    )
+    assert air.is_hermes_bundle(str(fake_js)) is False
+
+
+def test_run_rename_empty_selection_warns(capsys):
+    """Regression (M5): a selection that resolves to zero functions (e.g. a
+    --range with lo > hi) must print a one-line stderr warning instead of
+    silently writing an empty rename map."""
+    js = FIX.read_text()
+
+    def boom(*a, **k):
+        raise AssertionError("should never query with an empty selection")
+
+    map_dict, out_js = air.run_rename(
+        js, "bundle.js", "m", "u", 0.15,
+        selection_kwargs={"id_range": (99, 1)},  # lo > hi -> empty selection
+        cache_dir=None, query=boom)
+    assert map_dict["renames"] == []
+    captured = capsys.readouterr()
+    assert captured.err.strip() != ""
+    assert "0 functions" in captured.err
