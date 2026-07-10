@@ -39,8 +39,9 @@ def test_apply_renames_scoped_and_global():
     # normalize's r1 renamed but r10 left alone (word boundary)
     assert "strLength = r0['length']" in out
     assert "r10 = r0" in out
-    # Verify same register in different function survives untouched
-    assert "r1" in out  # r1 is only renamed in fn#2, must exist in other functions
+    # `global`'s own r1 (its second parameter) is untouched by fn#2's r1 rename --
+    # proves scope isolation, not just that some "r1" substring survives anywhere.
+    assert "function global(r0, r1)" in out
 
 
 def test_apply_renames_no_intra_scope_collapse():
@@ -121,14 +122,20 @@ def test_suggest_names_parses_model_json():
     assert "fetchData" in calls[0]  # prompt includes the function body
 
 
-def test_suggest_names_retries_then_gives_up():
+def test_suggest_names_retries_then_raises_on_persistent_bad_json():
+    """Regression: giving up after a retry must raise, not silently return [].
+
+    A silent [] return is indistinguishable from "the model legitimately
+    suggested nothing", and run_rename would cache that [] forever, poisoning
+    the resumable cache for a function ollama never actually evaluated.
+    """
     funcs = air.collect_functions(FIX.read_text())
     attempts = []
     def bad_query(prompt, model, url, temperature, timeout=180):
         attempts.append(1)
         return "not json{"
-    out = air.suggest_names(funcs[2], "m", "u", 0.15, query=bad_query)
-    assert out == []
+    with pytest.raises(air.OllamaError):
+        air.suggest_names(funcs[2], "m", "u", 0.15, query=bad_query)
     assert len(attempts) == 2  # one retry
 
 
@@ -392,3 +399,108 @@ def test_cache_store_atomic_roundtrip(tmp_path):
     # Verify the final file exists and is readable
     loaded = air.cache_load(cache_dir, key)
     assert loaded == renames, "Roundtrip failed: loaded data doesn't match stored"
+
+
+def test_run_rename_bad_json_not_cached(tmp_path):
+    """Regression (C1): give-up-on-bad-JSON must NOT poison the resumable cache.
+
+    suggest_names now raises OllamaError when the model returns unparseable
+    JSON twice in a row. run_rename must treat that exactly like a transport
+    OllamaError: skip-and-log the function, write NO cache entry, and still
+    complete the run. A later healthy run must re-query rather than replay a
+    cached [] forever.
+    """
+    js = FIX.read_text()
+    cache_dir = str(tmp_path / "cache")
+
+    def bad_json_query(prompt, model, url, temperature, timeout=180):
+        return "not json{"
+
+    # First run: every function gets unparseable JSON. Must complete without
+    # raising, and must NOT cache the empty give-up result.
+    map_dict, out_js = air.run_rename(
+        js, "bundle.js", "m", "u", 0.15,
+        selection_kwargs={},  # default: strings-only -> global + fetchData
+        cache_dir=cache_dir, query=bad_json_query)
+    assert map_dict["renames"] == []
+
+    # Second run: ollama is healthy now. If the first run had (incorrectly)
+    # cached the give-up [], this run would load the stale cache and never
+    # re-query -- so the rename would NOT appear.
+    def working_query(prompt, model, url, temperature, timeout=180):
+        if "function fetchData(" in prompt:
+            return _json.dumps({
+                "function": {"name": "fetchLoginSession", "confidence": 0.9},
+                "registers": {}})
+        return _json.dumps({"function": {}, "registers": {}})
+
+    map_dict2, out_js2 = air.run_rename(
+        js, "bundle.js", "m", "u", 0.15,
+        selection_kwargs={},
+        cache_dir=cache_dir, query=working_query)
+    pairs = {(r["scope"], r["original"]): r["suggested"] for r in map_dict2["renames"]}
+    assert pairs[("global", "fetchData")] == "fetchLoginSession"
+
+
+def test_main_missing_input_file_exits_cleanly(tmp_path, monkeypatch, capsys):
+    """Regression (I2): a non-existent input path must produce a friendly
+    error + non-zero exit, not an uncaught FileNotFoundError traceback."""
+    missing = tmp_path / "does_not_exist.js"
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(sys, "argv", ["ai_rename.py", str(missing), "-o", str(out_dir)])
+    with pytest.raises(SystemExit) as exc_info:
+        air.main()
+    assert exc_info.value.code != 0
+    captured = capsys.readouterr()
+    assert "does_not_exist.js" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_apply_renames_skips_tokens_inside_string_literals():
+    """Regression (I1): substitution is purely textual, so a rename token that
+    also appears inside a surviving string constant must not corrupt that
+    string -- string contents are the highest-signal artifact for RE."""
+    js = (
+        'function global(r0, r1) {\n'
+        '  var msg = "please rename r1 carefully";\n'
+        '  return r1 + r0;\n'
+        '}'
+    )
+    funcs = [air.Function(0, "global", (0, len(js)), js, {"r0", "r1"}, [], [])]
+    renames = [air.Rename("fn#0", "r1", "sessionToken", 0.9)]
+    out = air.apply_renames(js, funcs, renames)
+    # the real code token r1 was renamed
+    assert "return sessionToken + r0" in out
+    # but the string literal contents were left byte-for-byte untouched
+    assert '"please rename r1 carefully"' in out
+
+
+def test_is_hermes_bundle_ignores_text_mentioning_hermes(tmp_path):
+    """Regression (M4): is_hermes_bundle must rely only on the 4-byte Hermes
+    magic. A decompiled .js file that merely mentions "Hermes" in a comment
+    must not be misdetected as a raw bundle."""
+    fake_js = tmp_path / "decompiled.js"
+    fake_js.write_text(
+        "// Decompiled by hermes-dec (targets Hermes bytecode)\n"
+        "function global() {}\n"
+    )
+    assert air.is_hermes_bundle(str(fake_js)) is False
+
+
+def test_run_rename_empty_selection_warns(capsys):
+    """Regression (M5): a selection that resolves to zero functions (e.g. a
+    --range with lo > hi) must print a one-line stderr warning instead of
+    silently writing an empty rename map."""
+    js = FIX.read_text()
+
+    def boom(*a, **k):
+        raise AssertionError("should never query with an empty selection")
+
+    map_dict, out_js = air.run_rename(
+        js, "bundle.js", "m", "u", 0.15,
+        selection_kwargs={"id_range": (99, 1)},  # lo > hi -> empty selection
+        cache_dir=None, query=boom)
+    assert map_dict["renames"] == []
+    captured = capsys.readouterr()
+    assert captured.err.strip() != ""
+    assert "0 functions" in captured.err

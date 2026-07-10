@@ -10,7 +10,6 @@ import hashlib
 import json
 import os
 import re
-import struct
 import subprocess
 import sys
 import tempfile
@@ -160,17 +159,39 @@ def cache_store(cache_dir: str, key: str, renames: list) -> None:
         raise
 
 
+def _string_literal_spans(text: str) -> list:
+    """Return (start, end) spans (inclusive of quotes) of string literals in text."""
+    return [m.span() for m in STRING_RE.finditer(text)]
+
+
+def _inside_any_span(pos: int, spans: list) -> bool:
+    return any(start <= pos < end for start, end in spans)
+
+
 def _apply_map(text: str, mapping: dict) -> str:
     """Apply a mapping of token renames in a single pass to prevent intra-scope collapse.
 
     Matches all keys simultaneously, so already-substituted text is never re-scanned.
     Sorts keys by length (longest first) to avoid r1 matching within r10.
+
+    Substitution is purely textual, so without protection a rename could corrupt
+    a surviving string constant that happens to contain the same token (e.g. a
+    log message mentioning a register/function name). Candidate matches whose
+    position falls inside a detected string-literal span (via STRING_RE) are
+    left untouched.
     """
     if not mapping:
         return text
     keys = sorted(mapping, key=len, reverse=True)
     pat = re.compile(r"(?<![\w$])(" + "|".join(re.escape(k) for k in keys) + r")(?![\w$])")
-    return pat.sub(lambda m: mapping[m.group(1)], text)
+    spans = _string_literal_spans(text)
+
+    def repl(m):
+        if _inside_any_span(m.start(), spans):
+            return m.group(0)
+        return mapping[m.group(1)]
+
+    return pat.sub(repl, text)
 
 
 def apply_renames(js_text: str, funcs: list, renames: list) -> str:
@@ -211,6 +232,10 @@ def reconcile(renames: list) -> list:
     Deterministically disambiguates duplicate suggested names within the same scope
     by appending _2, _3, etc to lower-confidence duplicates. Processes renames sorted
     by (scope, -confidence, original) to ensure deterministic ordering.
+
+    Note: this only disambiguates names it assigns from this batch of suggestions --
+    it does not check suggested names against pre-existing identifiers already in the
+    source that were not part of this run's renames, so those may still collide.
     """
     used = {}   # scope -> set of taken names
     out = []
@@ -295,7 +320,16 @@ def suggest_names(func, model, url, temperature, query=query_ollama) -> list:
             break
         except (json.JSONDecodeError, TypeError):
             if attempt == 1:
-                return []
+                # Give-up must be distinguishable from "the model legitimately
+                # suggested nothing" (which returns []). Raising here (instead
+                # of returning []) means run_rename's OllamaError handling
+                # skips-and-logs the function WITHOUT caching the failure, so
+                # a resumable re-run re-queries instead of replaying a
+                # permanently poisoned empty cache entry.
+                raise OllamaError(
+                    "model returned unparseable JSON after retry for %s"
+                    % (func.name or scope_id(func))
+                )
     renames = []
     # Guard fn: ensure it is a dict before calling .get()
     fn = data.get("function") or {}
@@ -319,16 +353,14 @@ def suggest_names(func, model, url, temperature, query=query_ollama) -> list:
 
 
 def is_hermes_bundle(path: str) -> bool:
+    # Rely only on the 4-byte Hermes bytecode magic. A looser substring check
+    # (e.g. scanning for b"Hermes" in the header) false-positives on a
+    # decompiled .js file that merely mentions "Hermes" in a comment/string,
+    # misrouting it into the bundle decompile path instead of being read as text.
     try:
         with open(path, "rb") as f:
-            header = f.read(64)
-        magic = header[:4]
-        if magic in (b"\xc6\x1f\xbc\x03", b"\x1f\xc6\x03\xbc"):
-            return True
-        # Mirrors analyze_bundle.py:read_hermes_header's secondary fallback:
-        # some bundles carry a "Hermes" signature in the header without the
-        # exact magic bytes matching.
-        return b"Hermes" in header
+            magic = f.read(4)
+        return magic in (b"\xc6\x1f\xbc\x03", b"\x1f\xc6\x03\xbc")
     except OSError:
         return False
 
@@ -386,6 +418,10 @@ def run_rename(js_text, source, model, url, temperature, selection_kwargs,
                cache_dir=None, query=query_ollama, progress=None):
     funcs = collect_functions(js_text)
     selected = select_functions(funcs, **selection_kwargs)
+    if not selected:
+        sys.stderr.write(
+            "warning: selection matched 0 functions; writing an empty rename map\n"
+        )
     all_renames = []
     for i, func in enumerate(selected):
         if progress:
@@ -428,6 +464,9 @@ def main():
         js_text = load_decompiled(args.input)
     except DecompileError as e:
         sys.stderr.write("error: failed to decompile %s: %s\n" % (args.input, e))
+        sys.exit(1)
+    except OSError as e:
+        sys.stderr.write("error: cannot read %s: %s\n" % (args.input, e))
         sys.exit(1)
 
     id_range = None
