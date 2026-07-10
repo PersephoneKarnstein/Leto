@@ -124,6 +124,7 @@ python scripts/ai_rename.py decompiled.js --dry-run -o rename_out
 Outputs `rename_out/rename-map.json` (always) and `rename_out/renamed.js` (unless `--dry-run`).
 Requires a running ollama with the model pulled: `ollama pull qwen3-coder:30b`.
 The rename-map format is shared with the Hermes2Predict trained-model project so backends are interchangeable.
+Substitution skips tokens inside detected string literals so surviving string constants aren't corrupted; comments are not similarly protected (best-effort only).
 
 ---
 
